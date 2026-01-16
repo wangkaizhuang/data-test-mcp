@@ -1,0 +1,18 @@
+{
+    "mcpServers": {
+      "testid-helper": {
+        "command": "node",
+        "args": ["/Users/wangkaizhuang/Documents/learn-projects/data-testid-mcp/dist/index.js"],
+        "env": {
+          "BITBUCKET_BASE_URL": "https://code.fineres.com",
+          "BITBUCKET_USERNAME": "kevin.king",
+          "BITBUCKET_TOKEN": "YOUR_BITBUCKET_TOKEN_HERE",
+          "BITBUCKET_TARGET_PROJECT": "MUX",
+          "GIT_REMOTE": "origin",
+          "DEFAULT_BRANCH": "release/1.0"
+        }
+      }
+    }
+  }
+  
+  

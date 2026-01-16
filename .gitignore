@@ -1,0 +1,21 @@
+# Cursor MCP configuration with sensitive data
+.cursor/mcp.json
+
+# Node modules
+node_modules/
+
+# Build output
+dist/
+
+# Environment files
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+

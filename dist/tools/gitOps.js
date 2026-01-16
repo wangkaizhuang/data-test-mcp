@@ -1,0 +1,423 @@
+/**
+ * Git 操作工具
+ */
+import simpleGit from 'simple-git';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+const execAsync = promisify(exec);
+export class GitOperations {
+    git;
+    rootDir;
+    constructor(rootDir = process.cwd()) {
+        this.rootDir = rootDir;
+        this.git = simpleGit(rootDir);
+    }
+    /**
+     * 检查工作区状态
+     */
+    async getStatus() {
+        const status = await this.git.status();
+        return status.files.map(f => `${f.path} (${f.index})`).join('\n');
+    }
+    /**
+     * 拉取远程最新代码
+     */
+    async pullFromRemote(remote = 'origin', branch) {
+        try {
+            const targetBranch = branch || await this.getCurrentBranch();
+            // 拉取远程代码（Git 会自动处理合并）
+            await this.git.pull(remote, targetBranch);
+            return {
+                success: true,
+                branch: targetBranch,
+                message: `成功从 ${remote}/${targetBranch} 拉取最新代码`
+            };
+        }
+        catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            // 检查是否是冲突错误
+            if (errorMessage.includes('conflict') ||
+                errorMessage.includes('CONFLICT') ||
+                errorMessage.includes('merge conflict') ||
+                errorMessage.includes('Automatic merge failed')) {
+                return {
+                    success: false,
+                    error: errorMessage,
+                    message: `拉取时发现冲突，请先解决冲突后再提交`
+                };
+            }
+            // 检查是否是网络问题或分支不存在（这些情况下可以继续提交）
+            if (errorMessage.includes('Could not read from remote') ||
+                errorMessage.includes('does not exist') ||
+                errorMessage.includes('not found')) {
+                return {
+                    success: false,
+                    error: errorMessage,
+                    message: `无法拉取远程代码（可能是网络问题或远程分支不存在），将继续提交本地更改`
+                };
+            }
+            // 其他错误
+            return {
+                success: false,
+                error: errorMessage,
+                message: `拉取失败: ${branch || '当前分支'}`
+            };
+        }
+    }
+    /**
+     * 提交更改
+     */
+    async commitChanges(files, message) {
+        try {
+            // 1. 检查工作区状态
+            const status = await this.git.status();
+            if (status.files.length === 0) {
+                return {
+                    success: false,
+                    message: '没有需要提交的更改'
+                };
+            }
+            // 2. 添加文件
+            if (files.length > 0) {
+                await this.git.add(files);
+            }
+            else {
+                // 如果没有指定文件，添加所有更改
+                await this.git.add('.');
+            }
+            // 3. 提交
+            await this.git.commit(message);
+            return {
+                success: true,
+                message: `成功提交: ${message}`
+            };
+        }
+        catch (error) {
+            return {
+                success: false,
+                error: error instanceof Error ? error.message : String(error),
+                message: '提交失败'
+            };
+        }
+    }
+    /**
+     * 检查分支是否存在
+     */
+    async branchExists(branch) {
+        try {
+            const branches = await this.git.branchLocal();
+            return branches.all.includes(branch);
+        }
+        catch {
+            return false;
+        }
+    }
+    /**
+     * 获取当前分支
+     */
+    async getCurrentBranch() {
+        try {
+            const status = await this.git.status();
+            return status.current || 'main';
+        }
+        catch {
+            return 'main';
+        }
+    }
+    /**
+     * 创建并切换到新分支
+     */
+    async createBranch(branch) {
+        try {
+            const exists = await this.branchExists(branch);
+            if (!exists) {
+                await this.git.checkoutLocalBranch(branch);
+            }
+            else {
+                await this.git.checkout(branch);
+            }
+            return {
+                success: true,
+                branch,
+                message: `已切换到分支: ${branch}`
+            };
+        }
+        catch (error) {
+            return {
+                success: false,
+                error: error instanceof Error ? error.message : String(error),
+                message: `创建分支失败: ${branch}`
+            };
+        }
+    }
+    /**
+     * 推送到远程仓库
+     * 直接执行 git push，使用 Git 的默认行为
+     */
+    async pushToRemote(branch, remote) {
+        try {
+            // 如果指定了分支，确保在正确的分支上
+            if (branch) {
+                const currentBranch = await this.getCurrentBranch();
+                if (currentBranch !== branch) {
+                    const branchResult = await this.createBranch(branch);
+                    if (!branchResult.success) {
+                        return branchResult;
+                    }
+                }
+            }
+            // 直接执行 git push，不指定任何参数，使用 Git 默认行为
+            // 使用 exec 直接执行命令，避免 simple-git 自动添加参数
+            try {
+                await execAsync('git push', { cwd: this.rootDir });
+            }
+            catch (error) {
+                // 如果直接 push 失败（可能是没有 upstream），尝试设置 upstream 后再 push
+                // 但这里我们仍然不使用 -u，让 Git 自己决定
+                const errorMessage = error instanceof Error ? error.message : String(error);
+                if (errorMessage.includes('no upstream') || errorMessage.includes('no tracking information')) {
+                    // 分支没有 upstream，但用户要求不使用 -u，所以直接抛出错误
+                    throw error;
+                }
+                throw error;
+            }
+            const currentBranch = await this.getCurrentBranch();
+            return {
+                success: true,
+                branch: currentBranch,
+                message: `成功推送当前分支 ${currentBranch}`
+            };
+        }
+        catch (error) {
+            const currentBranch = await this.getCurrentBranch().catch(() => '未知分支');
+            return {
+                success: false,
+                error: error instanceof Error ? error.message : String(error),
+                message: `推送失败: ${currentBranch}`
+            };
+        }
+    }
+    /**
+     * 从远程 URL 解析 Bitbucket Server 信息
+     */
+    parseBitbucketUrl(url) {
+        // 支持格式:
+        // https://bitbucket.example.com/scm/PROJECT/REPO.git
+        // https://bitbucket.example.com/projects/PROJECT/repos/REPO/browse
+        // https://bitbucket.example.com/users/USERNAME/repos/REPO/browse (用户仓库/Fork)
+        // ssh://git@bitbucket.example.com:7999/PROJECT/REPO.git
+        // http://bitbucket.example.com/scm/PROJECT/REPO.git
+        // 匹配 users/repos 路径格式（用户仓库/Fork 仓库）
+        // 例如: https://code.fineres.com/users/kevin.king/repos/template-app-market/browse
+        const usersMatch = url.match(/https?:\/\/([^\/]+)\/users\/([^\/]+)\/repos\/([^\/]+)/i);
+        if (usersMatch) {
+            return {
+                baseUrl: `https://${usersMatch[1]}`,
+                projectKey: usersMatch[2], // 对于用户仓库，projectKey 使用 username
+                repositorySlug: usersMatch[3],
+                isUserRepo: true,
+                username: usersMatch[2]
+            };
+        }
+        // 匹配 scm 路径格式
+        const scmMatch = url.match(/https?:\/\/([^\/]+)\/scm\/([^\/]+)\/([^\/]+?)(?:\.git)?/i);
+        if (scmMatch) {
+            return {
+                baseUrl: `https://${scmMatch[1]}`,
+                projectKey: scmMatch[2],
+                repositorySlug: scmMatch[3]
+            };
+        }
+        // 匹配 projects/repos 路径格式
+        // 例如: https://code.fineres.com/projects/MUX/repos/template-app-market/browse
+        const projectsMatch = url.match(/https?:\/\/([^\/]+)\/projects\/([^\/]+)\/repos\/([^\/]+)/i);
+        if (projectsMatch) {
+            return {
+                baseUrl: `https://${projectsMatch[1]}`,
+                projectKey: projectsMatch[2],
+                repositorySlug: projectsMatch[3]
+            };
+        }
+        // 匹配 SSH 格式 (ssh://git@host:port/PROJECT/REPO.git)
+        const sshMatch = url.match(/ssh:\/\/git@([^:]+):?(\d+)?\/([^\/]+)\/([^\/]+?)(?:\.git)?/i);
+        if (sshMatch) {
+            const port = sshMatch[2] ? `:${sshMatch[2]}` : '';
+            return {
+                baseUrl: `https://${sshMatch[1]}${port}`,
+                projectKey: sshMatch[3],
+                repositorySlug: sshMatch[4]
+            };
+        }
+        return null;
+    }
+    /**
+     * 创建 Pull Request（Bitbucket Server）
+     */
+    async createPullRequest(title, description, baseBranch = 'develop', bitbucketConfig) {
+        try {
+            // 获取认证信息
+            const username = bitbucketConfig?.username || process.env.BITBUCKET_USERNAME;
+            const password = bitbucketConfig?.password || process.env.BITBUCKET_PASSWORD || process.env.BITBUCKET_TOKEN;
+            if (!username || !password) {
+                return {
+                    success: false,
+                    message: '需要设置 BITBUCKET_USERNAME 和 BITBUCKET_PASSWORD (或 BITBUCKET_TOKEN) 环境变量来创建 PR'
+                };
+            }
+            // 获取当前分支
+            const headBranch = await this.getCurrentBranch();
+            // 获取仓库信息
+            const remotes = await this.git.getRemotes(true);
+            const origin = remotes.find(r => r.name === 'origin');
+            if (!origin) {
+                return {
+                    success: false,
+                    message: '未找到 origin 远程仓库'
+                };
+            }
+            // 解析 Bitbucket 信息
+            const url = origin.refs.fetch || origin.refs.push;
+            const bitbucketInfo = bitbucketConfig?.projectKey && bitbucketConfig?.repositorySlug
+                ? {
+                    baseUrl: bitbucketConfig.baseUrl || process.env.BITBUCKET_BASE_URL || '',
+                    projectKey: bitbucketConfig.projectKey,
+                    repositorySlug: bitbucketConfig.repositorySlug
+                }
+                : this.parseBitbucketUrl(url);
+            if (!bitbucketInfo) {
+                return {
+                    success: false,
+                    message: '无法从远程仓库 URL 解析 Bitbucket Server 信息。请提供 projectKey 和 repositorySlug，或确保远程 URL 格式正确。'
+                };
+            }
+            // 如果没有 baseUrl，尝试从环境变量获取
+            const baseUrl = bitbucketInfo.baseUrl || process.env.BITBUCKET_BASE_URL;
+            if (!baseUrl) {
+                return {
+                    success: false,
+                    message: '需要设置 BITBUCKET_BASE_URL 环境变量或提供 baseUrl 配置'
+                };
+            }
+            // 构建 API URL
+            // Bitbucket Server API: 
+            // - 项目仓库: /rest/api/1.0/projects/{projectKey}/repos/{repositorySlug}/pull-requests
+            // - 用户仓库: /rest/api/1.0/projects/~{username}/repos/{repositorySlug}/pull-requests
+            // 参考文档: https://docs.atlassian.com/bitbucket-server/rest/5.16.0/bitbucket-rest.html
+            const normalizedBaseUrl = baseUrl.replace(/\/$/, '');
+            // 确定源仓库（fromRef）和目标仓库（toRef）
+            // 对于 Fork 仓库，fromRef 指向用户仓库，toRef 指向原项目仓库
+            let fromProjectKey;
+            let toProjectKey;
+            if (bitbucketInfo.isUserRepo && bitbucketInfo.username) {
+                // 用户仓库（Fork 仓库）
+                fromProjectKey = `~${bitbucketInfo.username}`;
+                // 目标仓库从环境变量或配置中获取，默认为 MUX（原项目）
+                toProjectKey = process.env.BITBUCKET_TARGET_PROJECT || 'MUX';
+            }
+            else {
+                // 项目仓库
+                fromProjectKey = bitbucketInfo.projectKey;
+                toProjectKey = bitbucketInfo.projectKey;
+            }
+            // API URL 使用目标仓库（toRef）的路径
+            const apiUrl = `${normalizedBaseUrl}/rest/api/1.0/projects/${toProjectKey}/repos/${bitbucketInfo.repositorySlug}/pull-requests`;
+            // 创建 HTTP Basic Auth header
+            // Bitbucket Server 支持 Basic Auth 和 OAuth
+            // Personal Access Token 可以直接作为密码使用
+            const auth = Buffer.from(`${username}:${password}`).toString('base64');
+            // 调用 Bitbucket Server API 创建 Pull Request
+            // 请求体格式参考: https://docs.atlassian.com/bitbucket-server/rest/5.16.0/bitbucket-rest.html#idm8297063984
+            const response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Basic ${auth}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    title,
+                    description: description || '',
+                    fromRef: {
+                        id: `refs/heads/${headBranch}`,
+                        repository: {
+                            slug: bitbucketInfo.repositorySlug,
+                            project: {
+                                key: fromProjectKey
+                            }
+                        }
+                    },
+                    toRef: {
+                        id: `refs/heads/${baseBranch}`,
+                        repository: {
+                            slug: bitbucketInfo.repositorySlug,
+                            project: {
+                                key: toProjectKey
+                            }
+                        }
+                    }
+                })
+            });
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                const errorMessage = errorData.errors?.[0]?.message || errorData.message || `HTTP ${response.status}`;
+                return {
+                    success: false,
+                    error: errorMessage,
+                    message: '创建 Pull Request 失败'
+                };
+            }
+            const pr = await response.json();
+            // Bitbucket Server PR URL 格式: 
+            // - 项目仓库: {baseUrl}/projects/{projectKey}/repos/{repositorySlug}/pull-requests/{id}
+            // - 用户仓库: {baseUrl}/users/{username}/repos/{repositorySlug}/pull-requests/{id}
+            const prUrl = pr.links?.self?.[0]?.href ||
+                (bitbucketInfo.isUserRepo && bitbucketInfo.username
+                    ? `${normalizedBaseUrl}/users/${bitbucketInfo.username}/repos/${bitbucketInfo.repositorySlug}/pull-requests/${pr.id}`
+                    : `${normalizedBaseUrl}/projects/${bitbucketInfo.projectKey}/repos/${bitbucketInfo.repositorySlug}/pull-requests/${pr.id}`);
+            return {
+                success: true,
+                prUrl,
+                message: `成功创建 Pull Request: ${prUrl}`
+            };
+        }
+        catch (error) {
+            return {
+                success: false,
+                error: error instanceof Error ? error.message : String(error),
+                message: '创建 Pull Request 失败'
+            };
+        }
+    }
+    /**
+     * 完整的提交流程：commit -> push -> create PR
+     */
+    async completeWorkflow(files, commitMessage, branch, prTitle, prDescription, baseBranch = 'develop', bitbucketConfig) {
+        // 1. 创建分支
+        const branchResult = await this.createBranch(branch);
+        if (!branchResult.success) {
+            return branchResult;
+        }
+        // 2. 提交
+        const commitResult = await this.commitChanges(files, commitMessage);
+        if (!commitResult.success) {
+            return commitResult;
+        }
+        // 3. 推送
+        const pushResult = await this.pushToRemote(branch);
+        if (!pushResult.success) {
+            return pushResult;
+        }
+        // 4. 创建 PR（如果提供了配置）
+        const username = bitbucketConfig?.username || process.env.BITBUCKET_USERNAME;
+        const password = bitbucketConfig?.password || process.env.BITBUCKET_PASSWORD || process.env.BITBUCKET_TOKEN;
+        if (username && password) {
+            const prResult = await this.createPullRequest(prTitle, prDescription, baseBranch, bitbucketConfig);
+            return prResult;
+        }
+        return {
+            success: true,
+            branch,
+            message: `代码已提交并推送到 ${branch}，但未创建 PR（需要 Bitbucket 认证信息）`
+        };
+    }
+}
+//# sourceMappingURL=gitOps.js.map
