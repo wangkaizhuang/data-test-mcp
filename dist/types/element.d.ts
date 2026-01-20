@@ -36,6 +36,13 @@ export interface ModificationResult {
     preview?: string;
     message?: string;
     error?: string;
+    details?: {
+        filePath?: string;
+        elementPath?: string;
+        testId?: string;
+        errorType?: string;
+        stack?: string;
+    };
 }
 export interface GitOperationResult {
     success: boolean;

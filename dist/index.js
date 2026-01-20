@@ -31,17 +31,17 @@ async function createServer() {
             tools: [
                 {
                     name: 'add_testid',
-                    description: '为指定元素添加 data-testid 属性。需要提供元素的 DOM 路径和 testid 值。',
+                    description: '为指定元素添加 data-testid 属性。需要提供元素的 DOM 路径和 testid 值。注意：请根据用户实际选择的元素填写参数，不要使用示例中的占位符值（如 share-button）。',
                     inputSchema: {
                         type: 'object',
                         properties: {
                             elementPath: {
                                 type: 'string',
-                                description: 'DOM 路径（从浏览器开发者工具获取，例如：div#__next > button.x-button）'
+                                description: 'DOM 路径（从浏览器开发者工具获取，例如：div#app > button.submit-btn 或 div.container > form > input#username，根据实际选择的元素路径填写）'
                             },
                             testId: {
                                 type: 'string',
-                                description: '要添加的 data-testid 值（例如：share-button）'
+                                description: '要添加的 data-testid 值（例如：submit-button、user-avatar、menu-item 等，根据实际元素用途命名）'
                             },
                             componentName: {
                                 type: 'string',
@@ -49,7 +49,7 @@ async function createServer() {
                             },
                             componentFilePath: {
                                 type: 'string',
-                                description: '组件文件路径（可选，如果已知可直接提供）'
+                                description: '组件文件路径（可选，如果已知可直接提供，例如：src/components/Button.tsx、src/pages/Login.tsx，根据实际文件路径填写）'
                             }
                         },
                         required: ['elementPath', 'testId']
@@ -63,11 +63,11 @@ async function createServer() {
                         properties: {
                             commitMessage: {
                                 type: 'string',
-                                description: '提交信息（例如：test: add data-testid to share button）'
+                                description: '提交信息（例如：test: add data-testid to market）'
                             },
                             branch: {
                                 type: 'string',
-                                description: '目标分支名称（可选，默认使用当前分支）'
+                                description: '目标分支名称（已废弃，现在直接在当前分支提交）'
                             },
                             autoPush: {
                                 type: 'boolean',
@@ -79,21 +79,21 @@ async function createServer() {
                 },
                 {
                     name: 'create_pr',
-                    description: '创建 Pull Request（Bitbucket Server）。需要在 confirm_and_commit 之后调用，或确保代码已提交并推送。',
+                    description: '创建 Pull Request（Bitbucket Server）。需要在 confirm_and_commit 之后调用，或确保代码已提交并推送。PR 将从当前分支合并到目标分支（默认：develop）。如果不提供 title，将使用最后一次 commit 的 message。如果不提供 description，将使用默认格式（【问题原因】和【改动思路】）。',
                     inputSchema: {
                         type: 'object',
                         properties: {
                             title: {
                                 type: 'string',
-                                description: 'PR 标题（例如：Add data-testid to share button）'
+                                description: 'PR 标题（可选，如果不提供则使用最后一次 commit 的 message）'
                             },
                             description: {
                                 type: 'string',
-                                description: 'PR 描述（可选）'
+                                description: 'PR 描述（可选，如果不提供则使用默认格式：\n【问题原因】\n【改动思路】）'
                             },
                             baseBranch: {
                                 type: 'string',
-                                description: '目标分支（默认：develop）'
+                                description: '目标分支（默认：develop，PR 将从当前分支合并到此分支）'
                             },
                             projectKey: {
                                 type: 'string',
@@ -108,7 +108,7 @@ async function createServer() {
                                 description: 'Bitbucket Server 基础 URL（可选，优先使用环境变量 BITBUCKET_BASE_URL）'
                             }
                         },
-                        required: ['title']
+                        required: []
                     }
                 },
                 {
@@ -139,7 +139,7 @@ async function createServer() {
                 },
                 {
                     name: 'add_testid_to_constant',
-                    description: '在常量文件中添加 testId 定义。建议在添加 data-testid 后使用，可以自动在 test.constant.ts 等文件中添加常量定义。',
+                    description: '在常量文件中添加 testId 定义。建议在添加 data-testid 后使用，可以自动在 test.constant.ts 等文件中添加常量定义。注意：请根据用户实际提供的 testId 和组件信息填写参数，不要使用示例中的占位符值。',
                     inputSchema: {
                         type: 'object',
                         properties: {
@@ -149,11 +149,11 @@ async function createServer() {
                             },
                             constantKey: {
                                 type: 'string',
-                                description: '常量键名（例如：SHARE_BUTTON）'
+                                description: '常量键名（例如：SUBMIT_BUTTON、USER_AVATAR、MENU_ITEM 等，根据实际组件或元素用途命名）'
                             },
                             testId: {
                                 type: 'string',
-                                description: 'testId 值（例如：share-button）'
+                                description: 'testId 值（例如：submit-button、user-avatar、menu-item 等，根据实际元素用途命名）'
                             }
                         },
                         required: ['constantKey', 'testId']
@@ -208,7 +208,13 @@ async function createServer() {
                                     type: 'text',
                                     text: JSON.stringify({
                                         success: false,
-                                        message: result.message || result.error
+                                        message: result.message || result.error || '代码修改失败',
+                                        error: result.error,
+                                        details: result.details || {
+                                            filePath,
+                                            elementPath,
+                                            testId
+                                        }
                                     }, null, 2)
                                 }
                             ]
@@ -275,27 +281,10 @@ async function createServer() {
                         };
                     }
                     const gitOps = new GitOperations(process.cwd());
-                    // 获取当前分支
+                    // 获取当前分支（不切换分支，直接在当前分支提交）
                     const currentBranch = await gitOps.getCurrentBranch();
-                    // 如果指定了分支，切换到该分支；否则使用当前分支
-                    let targetBranch = branch || currentBranch;
-                    // 如果指定了新分支，需要创建
-                    if (branch && branch !== currentBranch) {
-                        const branchResult = await gitOps.createBranch(branch);
-                        if (!branchResult.success) {
-                            return {
-                                content: [
-                                    {
-                                        type: 'text',
-                                        text: JSON.stringify(branchResult, null, 2)
-                                    }
-                                ]
-                            };
-                        }
-                        targetBranch = branch;
-                    }
                     // 提交前先拉取最新代码，避免冲突
-                    const pullResult = await gitOps.pullFromRemote('origin', targetBranch);
+                    const pullResult = await gitOps.pullFromRemote('origin', currentBranch);
                     if (!pullResult.success) {
                         // 如果是冲突错误，直接返回，不继续提交
                         if (pullResult.message?.includes('冲突')) {
@@ -316,7 +305,7 @@ async function createServer() {
                         // 其他错误（网络问题、远程分支不存在等），记录警告但继续提交
                         // 这些情况下本地提交仍然有效
                     }
-                    // 提交更改
+                    // 提交更改（只提交改动的文件）
                     const result = await gitOps.commitChanges([pendingChanges.filePath], commitMessage);
                     if (!result.success) {
                         return {
@@ -340,7 +329,7 @@ async function createServer() {
                                         text: JSON.stringify({
                                             success: true,
                                             message: `代码已提交并推送`,
-                                            branch: targetBranch,
+                                            branch: currentBranch,
                                             nextStep: '可以调用 create_pr 创建 Pull Request'
                                         }, null, 2)
                                     }
@@ -354,8 +343,8 @@ async function createServer() {
                                         type: 'text',
                                         text: JSON.stringify({
                                             success: true,
-                                            message: `代码已提交到分支 ${targetBranch}，但推送失败`,
-                                            branch: targetBranch,
+                                            message: `代码已提交到分支 ${currentBranch}，但推送失败`,
+                                            branch: currentBranch,
                                             pushError: pushResult.error,
                                             nextStep: '可以手动执行 git push 或调用 create_pr 创建 Pull Request'
                                         }, null, 2)
@@ -371,7 +360,7 @@ async function createServer() {
                                 text: JSON.stringify({
                                     success: true,
                                     message: result.message,
-                                    branch: targetBranch,
+                                    branch: currentBranch,
                                     nextStep: autoPush ? '可以调用 create_pr 创建 Pull Request' : '可以手动执行 git push 或调用 create_pr 创建 Pull Request'
                                 }, null, 2)
                             }
@@ -399,7 +388,30 @@ async function createServer() {
                         };
                     }
                     const gitOps = new GitOperations(process.cwd());
-                    const result = await gitOps.createPullRequest(title, description || `添加 data-testid 属性`, baseBranch, {
+                    // 获取当前分支
+                    const currentBranch = await gitOps.getCurrentBranch();
+                    // 如果没有提供 title，使用最后一次 commit 的 message
+                    let prTitle = title;
+                    if (!prTitle) {
+                        prTitle = await gitOps.getLastCommitMessage();
+                        if (!prTitle) {
+                            throw new McpError(ErrorCode.InvalidParams, '无法获取最后一次提交信息，请提供 title 参数');
+                        }
+                    }
+                    // 格式化 PR 描述
+                    let prDescription = description;
+                    if (!prDescription) {
+                        prDescription = `【问题原因】\n【改动思路】`;
+                    }
+                    else {
+                        // 如果提供了描述但没有格式，自动添加格式
+                        if (!prDescription.includes('【问题原因】') && !prDescription.includes('【改动思路】')) {
+                            prDescription = `【问题原因】\n${prDescription}\n\n【改动思路】`;
+                        }
+                    }
+                    // 从当前分支创建 PR 到当前分支（来源和目标都是当前分支）
+                    const result = await gitOps.createPullRequest(prTitle, prDescription, undefined, // baseBranch 已废弃，使用当前分支作为目标分支
+                    {
                         baseUrl,
                         username,
                         password,
@@ -431,16 +443,27 @@ async function createServer() {
                             port: port || 3001
                         });
                         const { url, port: actualPort } = await previewServer.start();
+                        // 生成注入脚本代码
+                        const injectScriptCode = `fetch('http://localhost:${actualPort}/inject-script.js').then(r => r.text()).then(eval);`;
+                        const injectScriptUrl = `http://localhost:${actualPort}/inject-script.js`;
                         return {
                             content: [
                                 {
                                     type: 'text',
                                     text: JSON.stringify({
                                         success: true,
-                                        message: `预览服务器已启动`,
-                                        url: url,
-                                        port: actualPort,
-                                        instructions: `请在浏览器中打开 ${url} 开始选择元素。选择元素后，点击"添加到 Cursor"按钮，元素信息将自动发送到 Cursor。`
+                                        message: `WebSocket 服务器已启动（端口 ${actualPort}）`,
+                                        targetUrl: targetUrl,
+                                        injectScriptUrl: injectScriptUrl,
+                                        injectScriptCode: injectScriptCode,
+                                        instructions: `请使用浏览器扩展工具在目标网页（${targetUrl}）中执行以下代码来注入脚本：`,
+                                        autoInject: {
+                                            url: targetUrl,
+                                            script: injectScriptCode,
+                                            description: '使用浏览器扩展工具自动在目标网页的控制台中执行脚本'
+                                        },
+                                        manualFallback: `如果自动注入失败，可以手动在目标网页的控制台中运行：${injectScriptCode}`,
+                                        nextStep: '脚本注入后，页面右侧会显示控制面板，点击"开始选择元素"按钮即可开始选择'
                                     }, null, 2)
                                 }
                             ]

@@ -16,6 +16,7 @@ export declare class GitOperations {
     pullFromRemote(remote?: string, branch?: string): Promise<GitOperationResult>;
     /**
      * 提交更改
+     * 只提交指定的文件，不提交其他更改
      */
     commitChanges(files: string[], message: string): Promise<GitOperationResult>;
     /**
@@ -42,6 +43,10 @@ export declare class GitOperations {
     /**
      * 创建 Pull Request（Bitbucket Server）
      */
+    /**
+     * 获取最后一次提交的 message
+     */
+    getLastCommitMessage(): Promise<string>;
     createPullRequest(title: string, description: string, baseBranch?: string, bitbucketConfig?: {
         baseUrl?: string;
         username?: string;

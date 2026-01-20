@@ -66,26 +66,29 @@ export class GitOperations {
     }
     /**
      * 提交更改
+     * 只提交指定的文件，不提交其他更改
      */
     async commitChanges(files, message) {
         try {
-            // 1. 检查工作区状态
-            const status = await this.git.status();
-            if (status.files.length === 0) {
+            // 1. 检查是否有指定的文件需要提交
+            if (files.length === 0) {
                 return {
                     success: false,
-                    message: '没有需要提交的更改'
+                    message: '没有指定要提交的文件'
                 };
             }
-            // 2. 添加文件
-            if (files.length > 0) {
-                await this.git.add(files);
+            // 2. 只添加指定的文件
+            await this.git.add(files);
+            // 3. 检查是否有实际更改（可能文件没有修改）
+            const status = await this.git.status();
+            const stagedFiles = status.files.filter(f => f.index !== ' ' && f.index !== '?');
+            if (stagedFiles.length === 0) {
+                return {
+                    success: false,
+                    message: '指定的文件没有需要提交的更改'
+                };
             }
-            else {
-                // 如果没有指定文件，添加所有更改
-                await this.git.add('.');
-            }
-            // 3. 提交
+            // 4. 提交
             await this.git.commit(message);
             return {
                 success: true,
@@ -220,12 +223,19 @@ export class GitOperations {
             };
         }
         // 匹配 scm 路径格式
-        const scmMatch = url.match(/https?:\/\/([^\/]+)\/scm\/([^\/]+)\/([^\/]+?)(?:\.git)?/i);
+        // 例如: https://code.fineres.com/scm/~kevin.king/data-testid-mcp.git
+        const scmMatch = url.match(/https?:\/\/([^\/]+)\/scm\/([^\/]+)\/([^\/]+?)(?:\.git)?$/i);
         if (scmMatch) {
+            const projectKey = scmMatch[2];
+            const repositorySlug = scmMatch[3];
+            // 检查是否是用户仓库（以 ~ 开头）
+            const isUserRepo = projectKey.startsWith('~');
             return {
                 baseUrl: `https://${scmMatch[1]}`,
-                projectKey: scmMatch[2],
-                repositorySlug: scmMatch[3]
+                projectKey: projectKey,
+                repositorySlug: repositorySlug,
+                isUserRepo: isUserRepo,
+                username: isUserRepo ? projectKey.replace(/^~/, '') : undefined
             };
         }
         // 匹配 projects/repos 路径格式
@@ -253,6 +263,18 @@ export class GitOperations {
     /**
      * 创建 Pull Request（Bitbucket Server）
      */
+    /**
+     * 获取最后一次提交的 message
+     */
+    async getLastCommitMessage() {
+        try {
+            const log = await this.git.log({ maxCount: 1 });
+            return log.latest?.message || '';
+        }
+        catch (error) {
+            return '';
+        }
+    }
     async createPullRequest(title, description, baseBranch = 'develop', bitbucketConfig) {
         try {
             // 获取认证信息
@@ -266,24 +288,26 @@ export class GitOperations {
             }
             // 获取当前分支
             const headBranch = await this.getCurrentBranch();
-            // 获取仓库信息
-            const remotes = await this.git.getRemotes(true);
-            const origin = remotes.find(r => r.name === 'origin');
-            if (!origin) {
+            // 使用 git config 获取远程仓库地址
+            let remoteUrl;
+            try {
+                const { stdout } = await execAsync('git config --get remote.origin.url', { cwd: this.rootDir });
+                remoteUrl = stdout.trim();
+            }
+            catch (error) {
                 return {
                     success: false,
-                    message: '未找到 origin 远程仓库'
+                    message: '无法获取远程仓库地址，请确保已配置 origin 远程仓库'
                 };
             }
             // 解析 Bitbucket 信息
-            const url = origin.refs.fetch || origin.refs.push;
             const bitbucketInfo = bitbucketConfig?.projectKey && bitbucketConfig?.repositorySlug
                 ? {
                     baseUrl: bitbucketConfig.baseUrl || process.env.BITBUCKET_BASE_URL || '',
                     projectKey: bitbucketConfig.projectKey,
                     repositorySlug: bitbucketConfig.repositorySlug
                 }
-                : this.parseBitbucketUrl(url);
+                : this.parseBitbucketUrl(remoteUrl);
             if (!bitbucketInfo) {
                 return {
                     success: false,
@@ -337,7 +361,7 @@ export class GitOperations {
                     title,
                     description: description || '',
                     fromRef: {
-                        id: `refs/heads/${headBranch}`,
+                        id: headBranch,
                         repository: {
                             slug: bitbucketInfo.repositorySlug,
                             project: {
@@ -346,7 +370,7 @@ export class GitOperations {
                         }
                     },
                     toRef: {
-                        id: `refs/heads/${baseBranch}`,
+                        id: headBranch,
                         repository: {
                             slug: bitbucketInfo.repositorySlug,
                             project: {

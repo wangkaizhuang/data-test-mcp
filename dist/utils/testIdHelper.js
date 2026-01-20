@@ -72,13 +72,13 @@ export async function checkTestIdsConstant(filePath) {
 export function generateConstantName(elementPath, testId, componentName) {
     // 如果提供了组件名，优先使用
     if (componentName) {
-        // 将组件名转换为常量格式：ShareButton -> SHARE_BUTTON
+        // 将组件名转换为常量格式：SubmitButton -> SUBMIT_BUTTON, UserAvatar -> USER_AVATAR
         return componentName
             .replace(/([A-Z])/g, '_$1')
             .replace(/^_/, '')
             .toUpperCase();
     }
-    // 从 testId 生成：share-button -> SHARE_BUTTON
+    // 从 testId 生成：submit-button -> SUBMIT_BUTTON, user-avatar -> USER_AVATAR
     if (testId) {
         return testId
             .replace(/-/g, '_')

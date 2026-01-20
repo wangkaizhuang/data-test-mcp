@@ -34,15 +34,23 @@ export declare class PreviewServer {
      */
     private broadcast;
     /**
-     * 获取预览页面 HTML
+     * 获取控制页面 HTML（新方案：脚本注入）
      */
     private getPreviewHTML;
     /**
-     * 获取元素选择器脚本
+     * 获取可注入到目标网页的脚本
+     */
+    private getInjectScript;
+    /**
+     * 获取书签工具（bookmarklet）
+     */
+    private getBookmarklet;
+    /**
+     * 获取元素选择器脚本（控制页面使用）
      */
     private getElementPickerScript;
     /**
-     * 内联元素选择器脚本
+     * 内联元素选择器脚本（控制页面使用）
      */
     private getInlineElementPickerScript;
     /**
