@@ -36,6 +36,41 @@ export class GitOperations {
         }
     }
     /**
+     * 检查是否有任何改动（暂存区或工作区）
+     */
+    async hasChanges() {
+        try {
+            const status = await this.git.status();
+            // 检查是否有已暂存的文件（index 不为 ' '）
+            const hasStaged = status.files.some(f => f.index !== ' ' && f.index !== '?');
+            // 检查是否有未暂存的文件（working_dir 不为 ' '）
+            const hasUnstaged = status.files.some(f => f.working_dir !== ' ' && f.working_dir !== '?');
+            return hasStaged || hasUnstaged;
+        }
+        catch (error) {
+            return false;
+        }
+    }
+    /**
+     * 添加所有改动到暂存区（git add --all）
+     */
+    async addAll() {
+        try {
+            await this.git.add('.');
+            return {
+                success: true,
+                message: '已将所有改动添加到暂存区'
+            };
+        }
+        catch (error) {
+            return {
+                success: false,
+                error: error instanceof Error ? error.message : String(error),
+                message: '添加文件到暂存区失败'
+            };
+        }
+    }
+    /**
      * 拉取远程最新代码
      */
     async pullFromRemote(remote = 'origin', branch) {
@@ -109,6 +144,35 @@ export class GitOperations {
             return {
                 success: true,
                 message: `成功提交: ${message}`
+            };
+        }
+        catch (error) {
+            return {
+                success: false,
+                error: error instanceof Error ? error.message : String(error),
+                message: '提交失败'
+            };
+        }
+    }
+    /**
+     * 提交所有已暂存的更改（git commit）
+     */
+    async commitAll(message) {
+        try {
+            // 1. 检查是否有已暂存的文件
+            const status = await this.git.status();
+            const stagedFiles = status.files.filter(f => f.index !== ' ' && f.index !== '?');
+            if (stagedFiles.length === 0) {
+                return {
+                    success: false,
+                    message: '暂存区没有需要提交的更改'
+                };
+            }
+            // 2. 提交所有已暂存的文件
+            await this.git.commit(message);
+            return {
+                success: true,
+                message: `成功提交 ${stagedFiles.length} 个文件: ${message}`
             };
         }
         catch (error) {

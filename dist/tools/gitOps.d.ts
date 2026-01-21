@@ -15,6 +15,14 @@ export declare class GitOperations {
      */
     getUnstagedFiles(): Promise<string[]>;
     /**
+     * 检查是否有任何改动（暂存区或工作区）
+     */
+    hasChanges(): Promise<boolean>;
+    /**
+     * 添加所有改动到暂存区（git add --all）
+     */
+    addAll(): Promise<GitOperationResult>;
+    /**
      * 拉取远程最新代码
      */
     pullFromRemote(remote?: string, branch?: string): Promise<GitOperationResult>;
@@ -23,6 +31,10 @@ export declare class GitOperations {
      * 只提交指定的文件，不提交其他更改
      */
     commitChanges(files: string[], message: string): Promise<GitOperationResult>;
+    /**
+     * 提交所有已暂存的更改（git commit）
+     */
+    commitAll(message: string): Promise<GitOperationResult>;
     /**
      * 检查分支是否存在
      */

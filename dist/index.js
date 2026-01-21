@@ -357,29 +357,38 @@ async function createServer() {
                     const gitOps = new GitOperations(process.cwd());
                     // 获取当前分支（不切换分支，直接在当前分支提交）
                     const currentBranch = await gitOps.getCurrentBranch();
-                    // 如果没有待提交的更改，检查是否有未暂存的文件
-                    let filesToCommit = [];
-                    if (!pendingChanges) {
-                        const unstagedFiles = await gitOps.getUnstagedFiles();
-                        if (unstagedFiles.length === 0) {
+                    // 检查是否有任何改动（暂存区或工作区）
+                    const hasChanges = await gitOps.hasChanges();
+                    if (!hasChanges && !pendingChanges) {
+                        return {
+                            content: [
+                                {
+                                    type: 'text',
+                                    text: JSON.stringify({
+                                        success: false,
+                                        message: '没有待提交的更改。请先调用 add_testid 添加 testid，或确保工作区或暂存区有改动。'
+                                    }, null, 2)
+                                }
+                            ]
+                        };
+                    }
+                    // 如果有改动，先执行 git add --all
+                    if (hasChanges) {
+                        const addResult = await gitOps.addAll();
+                        if (!addResult.success) {
                             return {
                                 content: [
                                     {
                                         type: 'text',
                                         text: JSON.stringify({
                                             success: false,
-                                            message: '没有待提交的更改。请先调用 add_testid 添加 testid，或确保工作区有未暂存的文件。'
+                                            message: addResult.message,
+                                            error: addResult.error
                                         }, null, 2)
                                     }
                                 ]
                             };
                         }
-                        // 如果有未暂存的文件，使用这些文件
-                        filesToCommit = unstagedFiles;
-                    }
-                    else {
-                        // 如果有待提交的更改，使用指定的文件
-                        filesToCommit = [pendingChanges.filePath];
                     }
                     // 提交前先拉取最新代码，避免冲突
                     const pullResult = await gitOps.pullFromRemote('origin', currentBranch);
@@ -403,8 +412,9 @@ async function createServer() {
                         // 其他错误（网络问题、远程分支不存在等），记录警告但继续提交
                         // 这些情况下本地提交仍然有效
                     }
-                    // 提交更改
-                    const result = await gitOps.commitChanges(filesToCommit, commitMessage);
+                    // 提交所有已暂存的更改（使用 git commit -a 或直接 commit）
+                    // 由于已经执行了 git add --all，所有改动都在暂存区，直接提交即可
+                    const result = await gitOps.commitAll(commitMessage);
                     if (!result.success) {
                         return {
                             content: [
