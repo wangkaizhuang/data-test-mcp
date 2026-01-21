@@ -13,6 +13,16 @@ export class GitOperations {
         this.git = simpleGit(rootDir);
     }
     /**
+     * 判断错误是否为“未找到 git”或 PATH 问题
+     */
+    isGitNotFound(error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        return (msg.includes('not recognized') || // Windows: "'git' is not recognized"
+            msg.includes('command not found') || // *nix
+            msg.includes('ENOENT') // spawn ENOENT
+        );
+    }
+    /**
      * 检查工作区状态
      */
     async getStatus() {
@@ -137,6 +147,9 @@ export class GitOperations {
             }
             // 2. 只添加指定的文件
             await this.git.add(files);
+            // 2.1 确保提交编码为 UTF-8，避免中文提交信息乱码
+            await this.git.addConfig('i18n.commitEncoding', 'utf-8');
+            await this.git.addConfig('core.quotepath', 'false');
             // 3. 检查是否有实际更改（可能文件没有修改）
             const status = await this.git.status();
             const stagedFiles = status.files.filter(f => f.index !== ' ' && f.index !== '?');
@@ -356,6 +369,17 @@ export class GitOperations {
                 }
             }
             catch (error) {
+                if (this.isGitNotFound(error)) {
+                    return {
+                        success: false,
+                        message: '未找到 git，请安装 Git 并确保命令行可用（需在 PATH 中）。',
+                        error: error instanceof Error ? error.message : String(error),
+                        details: {
+                            hint: '安装 Git，并在终端执行 git --version 验证',
+                            cwd: this.rootDir
+                        }
+                    };
+                }
                 const errorMessage = error instanceof Error ? error.message : String(error);
                 return {
                     success: false,

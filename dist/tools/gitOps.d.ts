@@ -7,6 +7,10 @@ export declare class GitOperations {
     private rootDir;
     constructor(rootDir?: string);
     /**
+     * 判断错误是否为“未找到 git”或 PATH 问题
+     */
+    private isGitNotFound;
+    /**
      * 检查工作区状态
      */
     getStatus(): Promise<string>;
