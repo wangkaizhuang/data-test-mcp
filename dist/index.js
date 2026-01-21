@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * TestID Helper MCP Server
  * 为前端元素自动添加 data-testid 属性的 MCP 工具
@@ -477,14 +476,15 @@ async function createServer() {
                             prDescription = `【问题原因】\n${prDescription}\n\n【改动思路】`;
                         }
                     }
-                    // 从当前分支创建 PR 到当前分支（来源和目标都是当前分支）
-                    const result = await gitOps.createPullRequest(prTitle, prDescription, undefined, // baseBranch 已废弃，使用当前分支作为目标分支
-                    {
+                    // 从当前分支创建 PR 到目标分支（baseBranch，默认为 develop）
+                    // 默认添加评审人：Kevin.King、johntsai、Roy.Liu
+                    const result = await gitOps.createPullRequest(prTitle, prDescription, baseBranch, {
                         baseUrl,
                         username,
                         password,
                         projectKey,
-                        repositorySlug
+                        repositorySlug,
+                        reviewers: ['Kevin.King', 'johntsai', 'Roy.Liu']
                     });
                     return {
                         content: [

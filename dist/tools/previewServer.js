@@ -8,8 +8,25 @@ import { URL } from 'url';
 import { readFile } from 'fs/promises';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+// 兼容 ESM 和 CJS 环境
+const getFilename = () => {
+    if (typeof __filename !== 'undefined') {
+        // CJS 环境
+        return __filename;
+    }
+    // ESM 环境
+    return fileURLToPath(import.meta.url);
+};
+const getDirname = () => {
+    if (typeof __dirname !== 'undefined') {
+        // CJS 环境
+        return __dirname;
+    }
+    // ESM 环境
+    return dirname(fileURLToPath(import.meta.url));
+};
+const __filename_compat = getFilename();
+const __dirname_compat = getDirname();
 export class PreviewServer {
     httpServer = null;
     wsServer = null;
@@ -777,7 +794,7 @@ export class PreviewServer {
     async getElementPickerScript() {
         // 尝试从文件读取，如果不存在则返回内联脚本
         try {
-            const scriptPath = join(__dirname, '../../public/element-picker.js');
+            const scriptPath = join(__dirname_compat, '../../public/element-picker.js');
             return await readFile(scriptPath, 'utf-8');
         }
         catch {

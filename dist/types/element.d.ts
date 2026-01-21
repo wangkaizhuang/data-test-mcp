@@ -50,5 +50,6 @@ export interface GitOperationResult {
     branch?: string;
     prUrl?: string;
     error?: string;
+    details?: Record<string, any>;
 }
 //# sourceMappingURL=element.d.ts.map

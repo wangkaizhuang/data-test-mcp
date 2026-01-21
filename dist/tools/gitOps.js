@@ -349,13 +349,22 @@ export class GitOperations {
             // 使用 git config 获取远程仓库地址
             let remoteUrl;
             try {
-                const { stdout } = await execAsync('git config --get remote.origin.url', { cwd: this.rootDir });
+                const { stdout, stderr } = await execAsync('git config --get remote.origin.url', { cwd: this.rootDir });
                 remoteUrl = stdout.trim();
+                if (!remoteUrl) {
+                    throw new Error(stderr || 'empty origin url');
+                }
             }
             catch (error) {
+                const errorMessage = error instanceof Error ? error.message : String(error);
                 return {
                     success: false,
-                    message: '无法获取远程仓库地址，请确保已配置 origin 远程仓库'
+                    message: '无法获取远程仓库地址，请确保已配置 origin 远程仓库',
+                    error: errorMessage,
+                    details: {
+                        hint: 'git config --get remote.origin.url',
+                        cwd: this.rootDir
+                    }
                 };
             }
             // 解析 Bitbucket 信息
@@ -407,6 +416,11 @@ export class GitOperations {
             // Bitbucket Server 支持 Basic Auth 和 OAuth
             // Personal Access Token 可以直接作为密码使用
             const auth = Buffer.from(`${username}:${password}`).toString('base64');
+            // 准备评审人列表
+            const reviewers = bitbucketConfig?.reviewers || ['Kevin.King', 'johntsai', 'Roy.Liu'];
+            const reviewersArray = reviewers.map(username => ({
+                user: { name: username }
+            }));
             // 调用 Bitbucket Server API 创建 Pull Request
             // 请求体格式参考: https://docs.atlassian.com/bitbucket-server/rest/5.16.0/bitbucket-rest.html#idm8297063984
             const response = await fetch(apiUrl, {
@@ -428,23 +442,36 @@ export class GitOperations {
                         }
                     },
                     toRef: {
-                        id: headBranch,
+                        id: baseBranch || headBranch,
                         repository: {
                             slug: bitbucketInfo.repositorySlug,
                             project: {
                                 key: toProjectKey
                             }
                         }
-                    }
+                    },
+                    reviewers: reviewersArray
                 })
             });
             if (!response.ok) {
-                const errorData = await response.json().catch(() => ({}));
-                const errorMessage = errorData.errors?.[0]?.message || errorData.message || `HTTP ${response.status}`;
+                const errorText = await response.text().catch(() => '');
+                let errorMessage = `HTTP ${response.status}`;
+                try {
+                    const errorData = JSON.parse(errorText);
+                    errorMessage = errorData.errors?.[0]?.message || errorData.message || errorMessage;
+                }
+                catch {
+                    // 非 JSON 响应，保持默认
+                }
                 return {
                     success: false,
                     error: errorMessage,
-                    message: '创建 Pull Request 失败'
+                    message: '创建 Pull Request 失败',
+                    details: {
+                        status: response.status,
+                        apiUrl,
+                        response: errorText?.slice(0, 500) // 截断避免过长
+                    }
                 };
             }
             const pr = await response.json();
@@ -465,7 +492,11 @@ export class GitOperations {
             return {
                 success: false,
                 error: error instanceof Error ? error.message : String(error),
-                message: '创建 Pull Request 失败'
+                message: '创建 Pull Request 失败',
+                details: {
+                    hint: '检查网络、认证信息或远程仓库 URL',
+                    cwd: this.rootDir
+                }
             };
         }
     }
