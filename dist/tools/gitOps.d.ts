@@ -7,25 +7,17 @@ export declare class GitOperations {
     private rootDir;
     constructor(rootDir?: string);
     /**
-     * 判断错误是否为“未找到 git”或 PATH 问题
-     */
-    private isGitNotFound;
-    /**
      * 检查工作区状态
      */
     getStatus(): Promise<string>;
     /**
+     * 获取所有未暂存的文件（包括修改和新增的文件）
+     */
+    getUnstagedFiles(): Promise<string[]>;
+    /**
      * 拉取远程最新代码
      */
     pullFromRemote(remote?: string, branch?: string): Promise<GitOperationResult>;
-    /**
-     * 执行 lint 检查
-     */
-    runLint(): Promise<GitOperationResult>;
-    /**
-     * 获取修改过的文件列表（包括已暂存和未暂存的）
-     */
-    getModifiedFiles(): Promise<string[]>;
     /**
      * 提交更改
      * 只提交指定的文件，不提交其他更改
@@ -65,7 +57,6 @@ export declare class GitOperations {
         password?: string;
         projectKey?: string;
         repositorySlug?: string;
-        reviewers?: string[];
     }): Promise<GitOperationResult>;
     /**
      * 完整的提交流程：commit -> push -> create PR
@@ -76,7 +67,6 @@ export declare class GitOperations {
         password?: string;
         projectKey?: string;
         repositorySlug?: string;
-        reviewers?: string[];
     }): Promise<GitOperationResult>;
 }
 //# sourceMappingURL=gitOps.d.ts.map

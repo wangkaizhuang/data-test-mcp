@@ -8,25 +8,8 @@ import { URL } from 'url';
 import { readFile } from 'fs/promises';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-// 兼容 ESM 和 CJS 环境
-const getFilename = () => {
-    if (typeof __filename !== 'undefined') {
-        // CJS 环境
-        return __filename;
-    }
-    // ESM 环境
-    return fileURLToPath(import.meta.url);
-};
-const getDirname = () => {
-    if (typeof __dirname !== 'undefined') {
-        // CJS 环境
-        return __dirname;
-    }
-    // ESM 环境
-    return dirname(fileURLToPath(import.meta.url));
-};
-const __filename_compat = getFilename();
-const __dirname_compat = getDirname();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 export class PreviewServer {
     httpServer = null;
     wsServer = null;
@@ -525,6 +508,25 @@ export class PreviewServer {
       <div id="__testidHelperStatus" style="padding: 8px; background: #1e3a5f; border-radius: 4px; margin-bottom: 12px; font-size: 12px; color: #4fc3f7;">
         等待连接...
       </div>
+      <div id="__testidHelperPathSection" style="display: none; margin-bottom: 12px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+          <div style="font-size: 12px; color: #858585; font-weight: 500;">DOM 路径：</div>
+          <div style="display: flex; gap: 4px;">
+            <button id="__testidHelperEditPath" style="background: #3c3c3c; color: #d4d4d4; border: none; padding: 4px 8px; border-radius: 3px; cursor: pointer; font-size: 10px; font-weight: 500;">编辑</button>
+            <button id="__testidHelperCopyPath" style="background: #0e639c; color: white; border: none; padding: 4px 8px; border-radius: 3px; cursor: pointer; font-size: 10px; font-weight: 500;">复制</button>
+          </div>
+        </div>
+        <div id="__testidHelperPathView" style="background: #1e1e1e; border: 1px solid #3e3e42; border-radius: 4px; padding: 8px; font-family: 'Courier New', monospace; font-size: 11px; color: #d4d4d4; word-break: break-all; max-height: 120px; overflow-y: auto; min-height: 40px;">
+          <div id="__testidHelperPathContent" style="line-height: 1.6;"></div>
+        </div>
+        <div id="__testidHelperPathEdit" style="display: none; margin-top: 8px;">
+          <textarea id="__testidHelperPathInput" style="width: 100%; background: #1e1e1e; border: 1px solid #3e3e42; border-radius: 4px; padding: 8px; font-family: 'Courier New', monospace; font-size: 11px; color: #d4d4d4; resize: vertical; min-height: 60px; max-height: 120px; overflow-y: auto; box-sizing: border-box;" placeholder="输入 DOM 路径，例如：div#app > button.submit-btn"></textarea>
+          <div style="display: flex; gap: 8px; margin-top: 8px; justify-content: flex-end;">
+            <button id="__testidHelperPathCancel" style="background: #3c3c3c; color: #d4d4d4; border: none; padding: 6px 12px; border-radius: 3px; cursor: pointer; font-size: 11px;">取消</button>
+            <button id="__testidHelperPathConfirm" style="background: #1e4d2e; color: #81c784; border: none; padding: 6px 12px; border-radius: 3px; cursor: pointer; font-size: 11px; font-weight: 500;">确认修改</button>
+          </div>
+        </div>
+      </div>
       <div style="display: flex; gap: 8px; flex-direction: column;">
         <button id="__testidHelperStart" style="background: #0e639c; color: white; border: none; padding: 10px 16px; border-radius: 4px; cursor: pointer; font-size: 14px; font-weight: 500;">
           开始选择元素
@@ -549,6 +551,120 @@ export class PreviewServer {
     document.getElementById('__testidHelperClose').addEventListener('click', () => {
       panel.style.display = 'none';
       disableElementPicker();
+    });
+    
+    // 绑定复制路径按钮
+    document.getElementById('__testidHelperCopyPath').addEventListener('click', () => {
+      const pathContent = document.getElementById('__testidHelperPathContent');
+      if (pathContent) {
+        const path = pathContent.textContent || '';
+        navigator.clipboard.writeText(path).then(() => {
+          const copyBtn = document.getElementById('__testidHelperCopyPath');
+          if (copyBtn) {
+            const originalText = copyBtn.textContent;
+            copyBtn.textContent = '已复制！';
+            copyBtn.style.background = '#1e4d2e';
+            setTimeout(() => {
+              copyBtn.textContent = originalText;
+              copyBtn.style.background = '#0e639c';
+            }, 2000);
+          }
+          createToast('路径已复制到剪贴板', 'success');
+        }).catch(err => {
+          console.error('复制失败:', err);
+          createToast('复制失败', 'error');
+        });
+      }
+    });
+    
+    // 绑定编辑路径按钮
+    let currentEditingPath = '';
+    document.getElementById('__testidHelperEditPath').addEventListener('click', () => {
+      const pathView = document.getElementById('__testidHelperPathView');
+      const pathEdit = document.getElementById('__testidHelperPathEdit');
+      const pathInput = document.getElementById('__testidHelperPathInput');
+      const pathContent = document.getElementById('__testidHelperPathContent');
+      const editBtn = document.getElementById('__testidHelperEditPath');
+      
+      if (pathView && pathEdit && pathInput && pathContent) {
+        // 获取当前路径（从显示内容中提取纯文本）
+        currentEditingPath = pathContent.textContent || '';
+        pathInput.value = currentEditingPath;
+        
+        // 切换到编辑模式
+        pathView.style.display = 'none';
+        pathEdit.style.display = 'block';
+        editBtn.style.display = 'none';
+      }
+    });
+    
+    // 绑定取消编辑按钮
+    document.getElementById('__testidHelperPathCancel').addEventListener('click', () => {
+      const pathView = document.getElementById('__testidHelperPathView');
+      const pathEdit = document.getElementById('__testidHelperPathEdit');
+      const editBtn = document.getElementById('__testidHelperEditPath');
+      
+      if (pathView && pathEdit && editBtn) {
+        // 恢复原路径
+        updatePathDisplay(currentEditingPath);
+        
+        // 切换回查看模式
+        pathView.style.display = 'block';
+        pathEdit.style.display = 'none';
+        editBtn.style.display = 'block';
+      }
+    });
+    
+    // 绑定确认修改按钮
+    document.getElementById('__testidHelperPathConfirm').addEventListener('click', () => {
+      const pathView = document.getElementById('__testidHelperPathView');
+      const pathEdit = document.getElementById('__testidHelperPathEdit');
+      const pathInput = document.getElementById('__testidHelperPathInput');
+      const editBtn = document.getElementById('__testidHelperEditPath');
+      
+      if (pathView && pathEdit && pathInput && editBtn) {
+        const newPath = pathInput.value.trim();
+        
+        if (!newPath) {
+          createToast('路径不能为空', 'error');
+          return;
+        }
+        
+        // 更新路径显示
+        updatePathDisplay(newPath);
+        currentEditingPath = newPath;
+        
+        // 更新 selectedElement
+        if (selectedElement) {
+          selectedElement.elementPath = newPath;
+          
+          // 发送更新后的路径到 WebSocket
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+              type: 'element-selected',
+              elementPath: newPath
+            }));
+            updatePanelStatus('路径已更新并发送到 Cursor', 'success');
+            createToast('路径已更新并发送到 Cursor', 'success');
+          }
+        }
+        
+        // 切换回查看模式
+        pathView.style.display = 'block';
+        pathEdit.style.display = 'none';
+        editBtn.style.display = 'block';
+      }
+    });
+    
+    // 支持 Enter 确认，Esc 取消
+    document.getElementById('__testidHelperPathInput').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        document.getElementById('__testidHelperPathConfirm').click();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        document.getElementById('__testidHelperPathCancel').click();
+      }
     });
     
     return panel;
@@ -606,26 +722,58 @@ export class PreviewServer {
       let selector = element.nodeName.toLowerCase();
       
       if (element.id) {
+        // 有 ID 时，直接使用 ID（唯一标识）
         selector += '#' + element.id;
         path.unshift(selector);
         break;
       } else {
-        let sibling = element;
-        let nth = 1;
-        while (sibling.previousElementSibling) {
-          sibling = sibling.previousElementSibling;
-          if (sibling.nodeName === element.nodeName) {
-            nth++;
+        // 没有 ID 时，优先使用类名
+        const classes = Array.from(element.classList).filter(c => c && !c.startsWith('_'));
+        
+        if (classes.length > 0) {
+          // 有类名时，将所有类名都添加到选择器中
+          const allClasses = classes.map(c => '.' + c).join('');
+          
+          // 检查前面有多少个同类型且同类的兄弟元素（使用所有类名匹配）
+          let sibling = element;
+          let nth = 1;
+          while (sibling.previousElementSibling) {
+            sibling = sibling.previousElementSibling;
+            if (sibling.nodeName === element.nodeName) {
+              // 检查是否所有类名都匹配
+              const siblingClasses = Array.from(sibling.classList).filter(c => c && !c.startsWith('_'));
+              const allClassesMatch = classes.every(cls => siblingClasses.includes(cls));
+              if (allClassesMatch) {
+                nth++;
+              }
+            }
           }
-        }
-        if (nth > 1) {
-          selector += ':nth-of-type(' + nth + ')';
+          
+          // 如果有多个同类型同类的兄弟，使用 nth-of-type
+          if (nth > 1) {
+            selector += allClasses + ':nth-of-type(' + nth + ')';
+          } else {
+            // 否则使用所有类名
+            selector += allClasses;
+          }
         } else {
-          const classes = Array.from(element.classList).filter(c => c && !c.startsWith('_')).join('.');
-          if (classes) {
-            selector += '.' + classes.split(' ')[0];
+          // 没有类名时，检查前面有多少个同类型的兄弟元素
+          let sibling = element;
+          let nth = 1;
+          while (sibling.previousElementSibling) {
+            sibling = sibling.previousElementSibling;
+            if (sibling.nodeName === element.nodeName) {
+              nth++;
+            }
           }
+          
+          // 如果有多个同类型兄弟，使用 nth-of-type
+          if (nth > 1) {
+            selector += ':nth-of-type(' + nth + ')';
+          }
+          // 否则只使用标签名
         }
+        
         path.unshift(selector);
         element = element.parentElement;
       }
@@ -676,6 +824,8 @@ export class PreviewServer {
       highlightEl = null;
     }
     createToast('元素选择器已禁用', 'info');
+    
+    // 注意：不清除路径显示，保留用户选择的元素路径
   }
   
   function handleMouseOver(e) {
@@ -683,6 +833,9 @@ export class PreviewServer {
     e.stopPropagation();
     if (e.target !== document.body && e.target !== document.documentElement) {
       highlight(e.target);
+      // 实时显示路径预览（如果不在编辑模式）
+      const path = getDOMPath(e.target);
+      updatePathDisplay(path, true); // skipIfEditing = true，避免覆盖编辑内容
     }
   }
   
@@ -696,6 +849,9 @@ export class PreviewServer {
       elementPath: path,
       element: e.target
     };
+    
+    // 显示路径
+    updatePathDisplay(path);
     
     // 发送到 WebSocket
     if (ws.readyState === WebSocket.OPEN) {
@@ -718,6 +874,28 @@ export class PreviewServer {
     
     // 禁用选择器
     disableElementPicker();
+  }
+  
+  // 更新路径显示
+  function updatePathDisplay(path, skipIfEditing = false) {
+    const pathSection = document.getElementById('__testidHelperPathSection');
+    const pathContent = document.getElementById('__testidHelperPathContent');
+    const pathEdit = document.getElementById('__testidHelperPathEdit');
+    
+    // 如果正在编辑模式且 skipIfEditing 为 true，则不更新显示
+    if (skipIfEditing && pathEdit && pathEdit.style.display !== 'none') {
+      return;
+    }
+    
+    if (pathSection && pathContent) {
+      pathSection.style.display = 'block';
+      // 将路径按 > 分割，每部分单独显示，便于阅读
+      const parts = path.split(' > ');
+      pathContent.innerHTML = parts.map((part, index) => {
+        const isLast = index === parts.length - 1;
+        return \`<span style="color: \${isLast ? '#4ec9b0' : '#d4d4d4'};">\${part}</span>\${index < parts.length - 1 ? ' <span style="color: #858585;">></span> ' : ''}\`;
+      }).join('');
+    }
   }
   
   // WebSocket 连接
@@ -794,7 +972,7 @@ export class PreviewServer {
     async getElementPickerScript() {
         // 尝试从文件读取，如果不存在则返回内联脚本
         try {
-            const scriptPath = join(__dirname_compat, '../../public/element-picker.js');
+            const scriptPath = join(__dirname, '../../public/element-picker.js');
             return await readFile(scriptPath, 'utf-8');
         }
         catch {

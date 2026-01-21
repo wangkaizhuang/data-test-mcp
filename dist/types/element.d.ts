@@ -36,12 +36,15 @@ export interface ModificationResult {
     preview?: string;
     message?: string;
     error?: string;
+    location?: {
+        filePath: string;
+        line: number;
+        column: number;
+    };
     details?: {
-        filePath?: string;
-        elementPath?: string;
-        testId?: string;
-        errorType?: string;
-        stack?: string;
+        domPath?: string;
+        candidates?: string[];
+        suggestions?: string[];
     };
 }
 export interface GitOperationResult {
@@ -50,6 +53,5 @@ export interface GitOperationResult {
     branch?: string;
     prUrl?: string;
     error?: string;
-    details?: Record<string, any>;
 }
 //# sourceMappingURL=element.d.ts.map

@@ -4,42 +4,9 @@
  */
 import { readFile, writeFile } from 'fs/promises';
 import { parse } from '@babel/parser';
-import _traverse from '@babel/traverse';
-import _generate from '@babel/generator';
+import traverse from '@babel/traverse';
+import generate from '@babel/generator';
 import * as t from '@babel/types';
-// 修复 ES 模块中 traverse 和 generate 的导入问题
-// 在 ES 模块中，@babel/traverse 和 @babel/generator 的默认导出可能被包装
-let traverse;
-let generate;
-// 处理 traverse 导入
-if (typeof _traverse === 'function') {
-    traverse = _traverse;
-}
-else if (_traverse.default && typeof _traverse.default === 'function') {
-    traverse = _traverse.default;
-}
-else {
-    traverse = _traverse;
-}
-// 处理 generate 导入
-if (typeof _generate === 'function') {
-    generate = _generate;
-}
-else if (_generate.default && typeof _generate.default === 'function') {
-    generate = _generate.default;
-}
-else {
-    generate = _generate;
-}
-// 验证导入是否成功
-if (typeof traverse !== 'function') {
-    console.error('[addTestId] Failed to import traverse:', typeof traverse, _traverse);
-    throw new Error(`Failed to import @babel/traverse: ${typeof traverse}`);
-}
-if (typeof generate !== 'function') {
-    console.error('[addTestId] Failed to import generate:', typeof generate, _generate);
-    throw new Error(`Failed to import @babel/generator: ${typeof generate}`);
-}
 import { extractTagName, extractClassName } from './elementParser.js';
 /**
  * 检查 JSX 元素是否已有 data-testid 属性
@@ -63,47 +30,110 @@ function hasTestId(node, testId) {
     return false;
 }
 /**
- * 检查 JSX 元素是否匹配目标元素
+ * 从 DOM 路径中提取 ID
  */
-function matchesElement(node, elementInfo) {
+function extractId(domPath) {
+    const idMatch = domPath.match(/#([\w-]+)/);
+    return idMatch ? idMatch[1] : null;
+}
+/**
+ * 计算元素匹配分数（0-100，分数越高越匹配）
+ */
+function calculateMatchScore(node, elementInfo) {
     const openingElement = node.openingElement;
     const tagName = openingElement.name;
-    // 检查标签名
+    let score = 0;
+    let maxScore = 0;
+    // 1. 标签名匹配（权重：30）
+    maxScore += 30;
     const expectedTag = extractTagName(elementInfo.domPath);
     if (expectedTag) {
         if (t.isJSXIdentifier(tagName)) {
-            if (tagName.name.toLowerCase() !== expectedTag.toLowerCase()) {
-                return false;
+            if (tagName.name.toLowerCase() === expectedTag.toLowerCase()) {
+                score += 30;
             }
         }
         else if (t.isJSXMemberExpression(tagName)) {
-            // 处理 Component.SubComponent 的情况
-            return false; // 暂时不支持
+            // 组件名匹配（部分匹配）
+            const componentName = tagName.object && t.isJSXIdentifier(tagName.object)
+                ? tagName.object.name
+                : '';
+            if (componentName.toLowerCase().includes(expectedTag.toLowerCase())) {
+                score += 15; // 部分匹配给一半分数
+            }
         }
     }
-    // 检查类名
-    const expectedClass = extractClassName(elementInfo.domPath);
-    if (expectedClass) {
-        let hasClass = false;
+    else {
+        score += 30; // 如果没有期望标签，给满分
+    }
+    // 2. ID 匹配（权重：40，最高优先级）
+    maxScore += 40;
+    const expectedId = extractId(elementInfo.domPath);
+    if (expectedId) {
         for (const attr of openingElement.attributes) {
             if (t.isJSXAttribute(attr) && t.isJSXIdentifier(attr.name)) {
-                if (attr.name.name === 'className' || attr.name.name === 'class') {
+                if (attr.name.name === 'id') {
                     if (t.isStringLiteral(attr.value)) {
-                        hasClass = attr.value.value.includes(expectedClass);
+                        if (attr.value.value === expectedId) {
+                            score += 40;
+                        }
                     }
                     else if (t.isJSXExpressionContainer(attr.value)) {
-                        // 处理 className={...} 的情况，暂时跳过
-                        hasClass = true;
+                        // 对于表达式，给部分分数
+                        score += 20;
                     }
                     break;
                 }
             }
         }
-        if (expectedClass && !hasClass) {
-            return false;
+    }
+    else {
+        score += 40; // 如果没有期望 ID，给满分
+    }
+    // 3. 类名匹配（权重：30）
+    maxScore += 30;
+    const expectedClass = extractClassName(elementInfo.domPath);
+    if (expectedClass) {
+        for (const attr of openingElement.attributes) {
+            if (t.isJSXAttribute(attr) && t.isJSXIdentifier(attr.name)) {
+                if (attr.name.name === 'className' || attr.name.name === 'class') {
+                    if (t.isStringLiteral(attr.value)) {
+                        const className = attr.value.value;
+                        if (className === expectedClass) {
+                            score += 30; // 完全匹配
+                        }
+                        else if (className.includes(expectedClass)) {
+                            score += 20; // 包含匹配
+                        }
+                        else {
+                            // 检查是否是 Tailwind 类名（可能包含特殊字符）
+                            const normalizedClass = expectedClass.replace(/[:\[\]]/g, '');
+                            if (className.includes(normalizedClass)) {
+                                score += 15; // 部分匹配
+                            }
+                        }
+                    }
+                    else if (t.isJSXExpressionContainer(attr.value)) {
+                        // 对于表达式，给部分分数（可能是动态类名）
+                        score += 10;
+                    }
+                    break;
+                }
+            }
         }
     }
-    return true;
+    else {
+        score += 30; // 如果没有期望类名，给满分
+    }
+    // 计算百分比分数
+    return maxScore > 0 ? (score / maxScore) * 100 : 0;
+}
+/**
+ * 检查 JSX 元素是否匹配目标元素（宽松匹配）
+ */
+function matchesElement(node, elementInfo, minScore = 50) {
+    const score = calculateMatchScore(node, elementInfo);
+    return score >= minScore;
 }
 /**
  * 为 JSX 元素添加 data-testid 属性
@@ -120,120 +150,72 @@ function addTestIdAttribute(node, testId) {
     openingElement.attributes.push(testIdAttr);
 }
 /**
- * 使用字符串操作精确添加 data-testid，避免格式化整个文件
+ * 获取节点的位置信息（行号和列号）
  */
-function addTestIdUsingStringManipulation(fileContent, path, testId) {
-    const node = path.node;
-    const openingElement = node.openingElement;
-    // 获取节点的源代码位置
-    const start = openingElement.start;
-    const end = openingElement.end;
-    if (start === null || start === undefined || end === null || end === undefined) {
-        // 如果无法获取位置信息，回退到 AST 方式，但使用 retainLines 保持格式
-        addTestIdAttribute(node, testId);
-        if (typeof generate !== 'function') {
-            throw new Error(`generate is not a function, type: ${typeof generate}`);
-        }
-        // 只生成修改的部分，而不是整个文件
-        const output = generate(path.parent, {
-            retainLines: true,
-            compact: false,
-            comments: true,
-            preserveComments: true
-        }, fileContent);
-        return output.code;
+function getNodeLocation(node) {
+    if (node.loc) {
+        return {
+            line: node.loc.start.line,
+            column: node.loc.start.column + 1 // 列号从 1 开始
+        };
     }
-    // 提取开始标签的源代码（此时 start 和 end 已确认不为 undefined）
-    const beforeTag = fileContent.substring(0, start);
-    const tagContent = fileContent.substring(start, end);
-    const afterTag = fileContent.substring(end);
-    // 查找开始标签的结束位置（> 或 />）
-    const tagEndMatch = tagContent.match(/(\s*)([>\/])/);
-    if (!tagEndMatch || tagEndMatch.index === undefined) {
-        // 如果无法解析，回退到 AST 方式
-        addTestIdAttribute(node, testId);
-        if (typeof generate !== 'function') {
-            throw new Error(`generate is not a function, type: ${typeof generate}`);
-        }
-        const output = generate(path.parent, {
-            retainLines: true,
-            compact: false,
-            comments: true,
-            preserveComments: true
-        }, fileContent);
-        return output.code;
-    }
-    // 在结束符前插入 data-testid 属性
-    const beforeEnd = tagContent.substring(0, tagEndMatch.index);
-    const whitespace = tagEndMatch[1];
-    const endChar = tagEndMatch[2];
-    // 检查是否已有属性，决定如何添加空格
-    const tagNameMatch = beforeEnd.match(/^<(\w+)/);
-    const hasAttributes = beforeEnd.trim().length > (tagNameMatch ? tagNameMatch[0].length : 0);
-    // 判断是否多行属性，尽量保持原有缩进
-    let newAttribute = '';
-    if (beforeEnd.includes('\n')) {
-        const lastNewline = beforeEnd.lastIndexOf('\n');
-        const indent = beforeEnd.slice(lastNewline + 1).match(/^\s*/)?.[0] ?? '';
-        const insertIndent = indent || ' ';
-        newAttribute = `${beforeEnd.endsWith('\n') ? '' : '\n'}${insertIndent}data-testid="${testId}"`;
-    }
-    else {
-        newAttribute = hasAttributes ? ` data-testid="${testId}"` : ` data-testid="${testId}"`;
-    }
-    const newTagContent = beforeEnd + newAttribute + whitespace + endChar;
-    return beforeTag + newTagContent + afterTag;
+    return null;
 }
 /**
- * 查找匹配的 JSX 元素及其路径信息
- */
-function findMatchingJSXElementWithPath(ast, elementInfo) {
-    let target = null;
-    // 确保 traverse 是一个函数
-    if (typeof traverse !== 'function') {
-        console.error('[findMatchingJSXElement] traverse is not a function:', typeof traverse, traverse);
-        return null;
-    }
-    try {
-        traverse(ast, {
-            JSXElement(path) {
-                if (matchesElement(path.node, elementInfo)) {
-                    // 找到第一个匹配的元素
-                    if (!target) {
-                        target = { node: path.node, path };
-                    }
-                }
-            }
-        });
-    }
-    catch (error) {
-        console.error('[findMatchingJSXElement] traverse error:', error);
-        return null;
-    }
-    return target;
-}
-/**
- * 查找匹配的 JSX 元素（向后兼容）
+ * 查找匹配的 JSX 元素（返回最佳匹配和所有候选，包含位置信息）
  */
 function findMatchingJSXElement(ast, elementInfo) {
-    const result = findMatchingJSXElementWithPath(ast, elementInfo);
-    return result ? result.node : null;
+    const candidates = [];
+    let bestMatch = null;
+    traverse(ast, {
+        JSXElement(path) {
+            const score = calculateMatchScore(path.node, elementInfo);
+            // 收集所有可能的候选（分数 >= 30）
+            if (score >= 30) {
+                const tagName = path.node.openingElement.name;
+                const tag = t.isJSXIdentifier(tagName) ? tagName.name : 'Component';
+                const location = getNodeLocation(path.node);
+                const locationStr = location ? ` (行 ${location.line}, 列 ${location.column})` : '';
+                const info = `标签: ${tag}, 匹配度: ${score.toFixed(1)}%${locationStr}`;
+                candidates.push({
+                    node: path.node,
+                    score,
+                    info,
+                    location
+                });
+                // 更新最佳匹配
+                if (!bestMatch || score > bestMatch.score) {
+                    bestMatch = { node: path.node, score, location };
+                }
+            }
+        }
+    });
+    // 按分数排序候选
+    candidates.sort((a, b) => b.score - a.score);
+    // 确定最佳匹配节点
+    let resultNode = null;
+    let resultLocation = null;
+    if (bestMatch !== null) {
+        const match = bestMatch;
+        if (match.score >= 50) {
+            resultNode = match.node;
+            resultLocation = match.location;
+        }
+    }
+    return {
+        node: resultNode,
+        location: resultLocation,
+        candidates: candidates.slice(0, 5) // 只返回前 5 个候选
+    };
 }
 /**
  * 为指定元素添加 data-testid 属性
  */
 export async function addTestIdToElement(filePath, elementInfo, testId) {
     try {
-        // 0. 验证 traverse 和 generate 是否可用
-        if (typeof traverse !== 'function') {
-            throw new Error(`traverse is not a function, type: ${typeof traverse}, value: ${traverse}`);
-        }
-        if (typeof generate !== 'function') {
-            throw new Error(`generate is not a function, type: ${typeof generate}, value: ${generate}`);
-        }
         // 1. 读取文件
         const fileContent = await readFile(filePath, 'utf-8');
-        // 2. 解析 AST
+        // 2. 解析 AST（启用位置信息）
         const ast = parse(fileContent, {
             sourceType: 'module',
             plugins: [
@@ -249,56 +231,95 @@ export async function addTestIdToElement(filePath, elementInfo, testId) {
                 'dynamicImport',
                 'nullishCoalescingOperator',
                 'optionalChaining'
-            ]
+            ],
+            tokens: false,
+            ranges: false
         });
-        // 3. 查找匹配的 JSX 元素及其路径信息
-        const targetResult = findMatchingJSXElementWithPath(ast, elementInfo);
-        if (!targetResult) {
+        // 3. 查找匹配的 JSX 元素（包含位置信息）
+        const { node: targetNode, location: targetLocation, candidates } = findMatchingJSXElement(ast, elementInfo);
+        if (!targetNode) {
+            // 提供详细的错误信息和候选建议
+            let errorMessage = `未找到匹配的元素（匹配度 >= 50%）。\nDOM 路径: ${elementInfo.domPath}\n\n`;
+            if (candidates.length > 0) {
+                errorMessage += `找到 ${candidates.length} 个可能的候选元素：\n`;
+                candidates.forEach((candidate, index) => {
+                    errorMessage += `${index + 1}. ${candidate.info}\n`;
+                });
+                errorMessage += `\n提示：\n`;
+                errorMessage += `1. 请检查 DOM 路径是否正确\n`;
+                errorMessage += `2. 如果路径过深，可以尝试简化路径（去掉中间层级）\n`;
+                errorMessage += `3. 如果使用了动态类名（className={...}），可能需要手动指定 componentFilePath\n`;
+                errorMessage += `4. 可以尝试提供 componentName 或 componentFilePath 参数以提高匹配精度\n`;
+            }
+            else {
+                errorMessage += `未找到任何可能的候选元素。\n`;
+                errorMessage += `可能的原因：\n`;
+                errorMessage += `1. DOM 路径与源代码中的 JSX 结构不匹配\n`;
+                errorMessage += `2. 元素可能是动态生成的，不在当前文件中\n`;
+                errorMessage += `3. 类名或 ID 在运行时才添加，源代码中没有\n`;
+                errorMessage += `\n建议：\n`;
+                errorMessage += `- 尝试提供 componentName 或 componentFilePath 参数\n`;
+                errorMessage += `- 检查元素是否在正确的组件文件中\n`;
+                errorMessage += `- 如果路径包含 :nth-of-type，尝试简化路径\n`;
+            }
             return {
                 success: false,
-                message: `未找到匹配的元素。DOM 路径: ${elementInfo.domPath}`
+                message: errorMessage,
+                details: {
+                    domPath: elementInfo.domPath,
+                    candidates: candidates.map(c => c.info),
+                    suggestions: [
+                        '提供 componentName 参数',
+                        '提供 componentFilePath 参数',
+                        '简化 DOM 路径（去掉中间层级）',
+                        '检查元素是否在正确的文件中'
+                    ]
+                }
             };
         }
-        const { node: targetNode, path: targetPath } = targetResult;
         // 4. 检查是否已有 data-testid
         if (hasTestId(targetNode, testId)) {
             return {
                 success: false,
-                message: `元素已存在 data-testid="${testId}"`
+                message: `元素已存在 data-testid="${testId}"`,
+                location: targetLocation ? {
+                    filePath,
+                    line: targetLocation.line,
+                    column: targetLocation.column
+                } : undefined
             };
         }
-        // 5. 使用字符串操作精确修改，避免格式化整个文件
-        const newCode = addTestIdUsingStringManipulation(fileContent, targetPath, testId);
-        // 7. 生成 diff（简单版本）
+        // 5. 先返回位置信息，让 Cursor 定位到代码位置
+        // 注意：这里不立即修改，而是返回位置信息
+        // 实际的修改会在用户确认后进行
+        // 6. 添加 data-testid 属性
+        addTestIdAttribute(targetNode, testId);
+        // 7. 生成新代码
+        const output = generate(ast, {
+            retainLines: false,
+            compact: false,
+            comments: true
+        }, fileContent);
+        const newCode = output.code;
+        // 8. 生成 diff（简单版本）
         const diff = generateSimpleDiff(fileContent, newCode);
         return {
             success: true,
             filePath,
             diff,
-            preview: newCode
+            preview: newCode,
+            location: targetLocation ? {
+                filePath,
+                line: targetLocation.line,
+                column: targetLocation.column
+            } : undefined
         };
     }
     catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        const errorStack = error instanceof Error ? error.stack : undefined;
-        console.error('[addTestId] 错误详情:', {
-            filePath,
-            elementPath: elementInfo.domPath,
-            testId,
-            error: errorMessage,
-            stack: errorStack
-        });
         return {
             success: false,
-            error: errorMessage,
-            message: `代码修改失败: ${errorMessage}`,
-            details: {
-                filePath,
-                elementPath: elementInfo.domPath,
-                testId,
-                errorType: error instanceof Error ? error.constructor.name : typeof error,
-                stack: errorStack
-            }
+            error: error instanceof Error ? error.message : String(error),
+            message: '代码修改失败'
         };
     }
 }

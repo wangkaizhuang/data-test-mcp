@@ -10,24 +10,7 @@ export class GitOperations {
     rootDir;
     constructor(rootDir = process.cwd()) {
         this.rootDir = rootDir;
-        // 初始化 simple-git 并配置编码
-        this.git = simpleGit(rootDir, {
-            config: [
-                'core.quotepath=false', // 禁止路径转义
-                'i18n.commitEncoding=utf-8', // 提交信息编码
-                'i18n.logOutputEncoding=utf-8' // 日志输出编码
-            ]
-        });
-    }
-    /**
-     * 判断错误是否为“未找到 git”或 PATH 问题
-     */
-    isGitNotFound(error) {
-        const msg = error instanceof Error ? error.message : String(error);
-        return (msg.includes('not recognized') || // Windows: "'git' is not recognized"
-            msg.includes('command not found') || // *nix
-            msg.includes('ENOENT') // spawn ENOENT
-        );
+        this.git = simpleGit(rootDir);
     }
     /**
      * 检查工作区状态
@@ -35,6 +18,22 @@ export class GitOperations {
     async getStatus() {
         const status = await this.git.status();
         return status.files.map(f => `${f.path} (${f.index})`).join('\n');
+    }
+    /**
+     * 获取所有未暂存的文件（包括修改和新增的文件）
+     */
+    async getUnstagedFiles() {
+        try {
+            const status = await this.git.status();
+            // 获取所有未暂存的文件（working_dir 不为 ' ' 表示有修改）
+            const unstagedFiles = status.files
+                .filter(f => f.working_dir !== ' ' && f.working_dir !== '?')
+                .map(f => f.path);
+            return unstagedFiles;
+        }
+        catch (error) {
+            return [];
+        }
     }
     /**
      * 拉取远程最新代码
@@ -82,64 +81,6 @@ export class GitOperations {
         }
     }
     /**
-     * 执行 lint 检查
-     */
-    async runLint() {
-        try {
-            const { stdout, stderr } = await execAsync('pnpm lint', {
-                cwd: this.rootDir,
-                maxBuffer: 10 * 1024 * 1024 // 10MB buffer for large output
-            });
-            // 检查输出中是否包含错误信息
-            const hasError = stdout.toLowerCase().includes('error') ||
-                stderr.toLowerCase().includes('error');
-            if (hasError) {
-                return {
-                    success: false,
-                    error: stderr || stdout,
-                    message: 'Lint 检查发现错误，请修复后重试'
-                };
-            }
-            // 如果 stderr 有内容但退出码是 0，可能是警告，不算失败
-            if (stderr && !hasError) {
-                return {
-                    success: true,
-                    message: 'Lint 检查完成（有警告）',
-                    error: stderr
-                };
-            }
-            return {
-                success: true,
-                message: 'Lint 检查通过'
-            };
-        }
-        catch (error) {
-            // execAsync 在命令失败时会抛出错误
-            const errorMessage = error.stderr || error.stdout || error.message || String(error);
-            return {
-                success: false,
-                error: errorMessage,
-                message: 'Lint 检查失败，请修复错误后重试'
-            };
-        }
-    }
-    /**
-     * 获取修改过的文件列表（包括已暂存和未暂存的）
-     */
-    async getModifiedFiles() {
-        try {
-            const status = await this.git.status();
-            // 获取所有修改过的文件（包括已暂存和未暂存的）
-            const modifiedFiles = status.files
-                .filter(f => f.index !== ' ' || f.working_dir !== ' ')
-                .map(f => f.path);
-            return modifiedFiles;
-        }
-        catch (error) {
-            return [];
-        }
-    }
-    /**
      * 提交更改
      * 只提交指定的文件，不提交其他更改
      */
@@ -163,7 +104,7 @@ export class GitOperations {
                     message: '指定的文件没有需要提交的更改'
                 };
             }
-            // 4. 提交（编码已在构造函数中配置）
+            // 4. 提交
             await this.git.commit(message);
             return {
                 success: true,
@@ -366,33 +307,13 @@ export class GitOperations {
             // 使用 git config 获取远程仓库地址
             let remoteUrl;
             try {
-                const { stdout, stderr } = await execAsync('git config --get remote.origin.url', { cwd: this.rootDir });
+                const { stdout } = await execAsync('git config --get remote.origin.url', { cwd: this.rootDir });
                 remoteUrl = stdout.trim();
-                if (!remoteUrl) {
-                    throw new Error(stderr || 'empty origin url');
-                }
             }
             catch (error) {
-                if (this.isGitNotFound(error)) {
-                    return {
-                        success: false,
-                        message: '未找到 git，请安装 Git 并确保命令行可用（需在 PATH 中）。',
-                        error: error instanceof Error ? error.message : String(error),
-                        details: {
-                            hint: '安装 Git，并在终端执行 git --version 验证',
-                            cwd: this.rootDir
-                        }
-                    };
-                }
-                const errorMessage = error instanceof Error ? error.message : String(error);
                 return {
                     success: false,
-                    message: '无法获取远程仓库地址，请确保已配置 origin 远程仓库',
-                    error: errorMessage,
-                    details: {
-                        hint: 'git config --get remote.origin.url',
-                        cwd: this.rootDir
-                    }
+                    message: '无法获取远程仓库地址，请确保已配置 origin 远程仓库'
                 };
             }
             // 解析 Bitbucket 信息
@@ -444,11 +365,6 @@ export class GitOperations {
             // Bitbucket Server 支持 Basic Auth 和 OAuth
             // Personal Access Token 可以直接作为密码使用
             const auth = Buffer.from(`${username}:${password}`).toString('base64');
-            // 准备评审人列表
-            const reviewers = bitbucketConfig?.reviewers || ['Kevin.King', 'johntsai', 'Roy.Liu'];
-            const reviewersArray = reviewers.map(username => ({
-                user: { name: username }
-            }));
             // 调用 Bitbucket Server API 创建 Pull Request
             // 请求体格式参考: https://docs.atlassian.com/bitbucket-server/rest/5.16.0/bitbucket-rest.html#idm8297063984
             const response = await fetch(apiUrl, {
@@ -470,36 +386,23 @@ export class GitOperations {
                         }
                     },
                     toRef: {
-                        id: baseBranch || headBranch,
+                        id: headBranch,
                         repository: {
                             slug: bitbucketInfo.repositorySlug,
                             project: {
                                 key: toProjectKey
                             }
                         }
-                    },
-                    reviewers: reviewersArray
+                    }
                 })
             });
             if (!response.ok) {
-                const errorText = await response.text().catch(() => '');
-                let errorMessage = `HTTP ${response.status}`;
-                try {
-                    const errorData = JSON.parse(errorText);
-                    errorMessage = errorData.errors?.[0]?.message || errorData.message || errorMessage;
-                }
-                catch {
-                    // 非 JSON 响应，保持默认
-                }
+                const errorData = await response.json().catch(() => ({}));
+                const errorMessage = errorData.errors?.[0]?.message || errorData.message || `HTTP ${response.status}`;
                 return {
                     success: false,
                     error: errorMessage,
-                    message: '创建 Pull Request 失败',
-                    details: {
-                        status: response.status,
-                        apiUrl,
-                        response: errorText?.slice(0, 500) // 截断避免过长
-                    }
+                    message: '创建 Pull Request 失败'
                 };
             }
             const pr = await response.json();
@@ -520,11 +423,7 @@ export class GitOperations {
             return {
                 success: false,
                 error: error instanceof Error ? error.message : String(error),
-                message: '创建 Pull Request 失败',
-                details: {
-                    hint: '检查网络、认证信息或远程仓库 URL',
-                    cwd: this.rootDir
-                }
+                message: '创建 Pull Request 失败'
             };
         }
     }

@@ -1,48 +1,19 @@
+#!/usr/bin/env node
 /**
  * TestID Helper MCP Server
  * 为前端元素自动添加 data-testid 属性的 MCP 工具
  */
-// 设置环境编码为 UTF-8
-process.env.LANG = 'en_US.UTF-8';
-process.env.LC_ALL = 'en_US.UTF-8';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { addTestIdToElement, applyCodeModification } from './tools/addTestId.js';
 import { locateComponentFileByInfo } from './utils/fileLocator.js';
+import { extractTagName, extractClassName } from './tools/elementParser.js';
 import { GitOperations } from './tools/gitOps.js';
 import { PreviewServer } from './tools/previewServer.js';
-import { generateTestIdSuggestions, addTestIdToConstant, generateConstantName, findTestConstantFiles } from './utils/testIdHelper.js';
-import { exec } from 'child_process';
-import { promisify } from 'util';
-import { platform } from 'os';
-const execAsync = promisify(exec);
-/**
- * 打开浏览器
- */
-async function openBrowser(url) {
-    try {
-        const osPlatform = platform();
-        let command;
-        if (osPlatform === 'darwin') {
-            // macOS
-            command = `open "${url}"`;
-        }
-        else if (osPlatform === 'win32') {
-            // Windows
-            command = `start "" "${url}"`;
-        }
-        else {
-            // Linux
-            command = `xdg-open "${url}"`;
-        }
-        await execAsync(command);
-    }
-    catch (error) {
-        // 如果打开浏览器失败，记录错误但不阻止服务器启动
-        console.error('Failed to open browser:', error);
-    }
-}
+import { generateTestIdSuggestions, addTestIdToConstant, generateConstantName } from './utils/testIdHelper.js';
+import { PortManager } from './utils/portManager.js';
+import { DevServer } from './tools/devServer.js';
 let pendingChanges = null;
 let previewServer = null;
 /**
@@ -145,17 +116,35 @@ async function createServer() {
                 },
                 {
                     name: 'start_preview',
-                    description: '启动网页预览服务器，可以在浏览器中选择元素并自动添加到 Cursor。注意：targetUrl 必须是 http://localhost:3000，服务器启动后会自动打开预览浏览器。',
+                    description: '启动前端项目预览。会检查并清理 3000 端口，执行 pnpm run dev 启动前端代码工程，等待 5 秒后在 Cursor 内置浏览器中打开 localhost:3000，并自动注入元素选择脚本。',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            projectPath: {
+                                type: 'string',
+                                description: '前端项目根目录路径（包含 package.json 的目录，默认为当前工作目录）'
+                            },
+                            port: {
+                                type: 'number',
+                                description: '前端项目端口（默认：3000）'
+                            }
+                        },
+                        required: []
+                    }
+                },
+                {
+                    name: 'start_debug',
+                    description: '启动浏览器预览调试start_debug功能。会在 3001 端口启动一个完整的调试页面（包含使用说明和控制面板），用于手动在目标网页中注入脚本并选择元素。',
                     inputSchema: {
                         type: 'object',
                         properties: {
                             targetUrl: {
                                 type: 'string',
-                                description: '要预览的网页 URL（必须是 http://localhost:3000）'
+                                description: '要预览的目标网页 URL（例如：http://localhost:3000）'
                             },
                             port: {
                                 type: 'number',
-                                description: '预览服务器端口（默认：3001）'
+                                description: '调试服务器端口（默认：3001）'
                             }
                         },
                         required: ['targetUrl']
@@ -200,9 +189,32 @@ async function createServer() {
         try {
             switch (name) {
                 case 'add_testid': {
-                    const { elementPath, testId, componentName, componentFilePath } = args;
-                    if (!elementPath || !testId) {
+                    let { elementPath, testId, componentName, componentFilePath } = args;
+                    if (!elementPath) {
                         throw new McpError(ErrorCode.InvalidParams, 'elementPath 和 testId 是必需的参数');
+                    }
+                    // 自动生成 testId（如果未提供）
+                    if (!testId) {
+                        console.error('[add_testid] testId not provided, generating automatically...');
+                        // 基于 componentName 和 elementPath 生成 testId
+                        const tag = extractTagName(elementPath);
+                        const className = extractClassName(elementPath);
+                        if (componentName) {
+                            // 将 PascalCase 转换为 kebab-case
+                            const kebabComponent = componentName
+                                .replace(/([a-z])([A-Z])/g, '$1-$2')
+                                .toLowerCase();
+                            testId = `${kebabComponent}-${tag || 'element'}`;
+                        }
+                        else if (className) {
+                            // 使用类名生成
+                            testId = `${className.replace(/[^a-zA-Z0-9]/g, '-')}-${tag || 'element'}`;
+                        }
+                        else {
+                            // 使用标签名
+                            testId = `${tag || 'element'}-${Date.now()}`;
+                        }
+                        console.error(`[add_testid] Generated testId: ${testId}`);
                     }
                     // 定位文件
                     let filePath = componentFilePath;
@@ -234,19 +246,23 @@ async function createServer() {
                     };
                     const result = await addTestIdToElement(filePath, elementInfo, testId);
                     if (!result.success) {
+                        let errorMessage = result.message || result.error || '未知错误';
+                        // 如果包含位置信息，添加到错误消息中
+                        if (result.location) {
+                            errorMessage += `\n\n📍 位置信息：\n`;
+                            errorMessage += `文件: ${result.location.filePath}\n`;
+                            errorMessage += `行号: ${result.location.line}\n`;
+                            errorMessage += `列号: ${result.location.column}\n`;
+                            errorMessage += `\n💡 提示：请检查该位置的代码是否正确。`;
+                        }
                         return {
                             content: [
                                 {
                                     type: 'text',
                                     text: JSON.stringify({
                                         success: false,
-                                        message: result.message || result.error || '代码修改失败',
-                                        error: result.error,
-                                        details: result.details || {
-                                            filePath,
-                                            elementPath,
-                                            testId
-                                        }
+                                        message: errorMessage,
+                                        location: result.location
                                     }, null, 2)
                                 }
                             ]
@@ -258,6 +274,15 @@ async function createServer() {
                         testId,
                         elementInfo
                     };
+                    // 先返回位置信息，让用户确认位置
+                    let locationMessage = '';
+                    if (result.location) {
+                        locationMessage = `\n\n📍 **代码位置**：\n`;
+                        locationMessage += `- 文件: \`${result.location.filePath}\`\n`;
+                        locationMessage += `- 行号: ${result.location.line}\n`;
+                        locationMessage += `- 列号: ${result.location.column}\n`;
+                        locationMessage += `\n💡 请确认该位置的代码是否正确，然后继续。\n`;
+                    }
                     // 应用修改
                     if (result.preview) {
                         await applyCodeModification(result.filePath, result.preview);
@@ -265,16 +290,40 @@ async function createServer() {
                     // 生成智能提示
                     const suggestions = await generateTestIdSuggestions(elementPath, testId, componentName, filePath, process.cwd());
                     const constantKey = generateConstantName(elementPath, testId, componentName);
+                    // 自动添加到常量文件
+                    console.error('[add_testid] Attempting to add testId to constant file...');
+                    let constantResult = null;
+                    if (suggestions.constantFile) {
+                        try {
+                            constantResult = await addTestIdToConstant(suggestions.constantFile, constantKey, testId);
+                            console.error(`[add_testid] Constant file update: ${constantResult.success ? 'SUCCESS' : 'FAILED'}`);
+                        }
+                        catch (error) {
+                            console.error('[add_testid] Failed to add to constant file:', error);
+                        }
+                    }
                     return {
                         content: [
                             {
                                 type: 'text',
                                 text: JSON.stringify({
                                     success: true,
-                                    message: `成功为元素添加 data-testid="${testId}"`,
+                                    message: `✅ 成功为元素添加 data-testid="${testId}"${locationMessage}`,
                                     filePath: result.filePath,
+                                    location: result.location,
                                     diff: result.diff,
                                     preview: '代码已修改，请检查文件确认无误后调用 confirm_and_commit 提交更改。',
+                                    constantUpdate: constantResult ? {
+                                        success: constantResult.success,
+                                        constantFile: suggestions.constantFile,
+                                        constantKey: constantKey,
+                                        message: constantResult.success
+                                            ? `✅ 已自动添加到常量文件：${suggestions.constantFile}`
+                                            : `⚠️  常量文件更新失败：${constantResult.message}`
+                                    } : {
+                                        success: false,
+                                        message: '未找到常量文件，可手动添加'
+                                    },
                                     suggestions: {
                                         constantFile: suggestions.constantFile,
                                         constantName: suggestions.constantName,
@@ -282,12 +331,18 @@ async function createServer() {
                                         constantValue: suggestions.constantValue,
                                         componentFile: suggestions.componentFile,
                                         tips: suggestions.suggestions,
-                                        nextSteps: [
-                                            `1. 在常量文件 \`${suggestions.constantFile}\` 中添加：\`${suggestions.constantName}.${constantKey} = '${testId}'\``,
-                                            `2. 在组件中使用：\`data-testid={${suggestions.constantName}.${constantKey}}\``,
-                                            `3. 或使用工具：\`add_testid_to_constant\` 自动添加常量`,
-                                            `4. 确认修改后调用 \`confirm_and_commit\` 提交代码`
-                                        ]
+                                        nextSteps: constantResult?.success
+                                            ? [
+                                                `✅ testId 已添加到常量文件`,
+                                                `✅ 可在组件中使用：data-testid={${suggestions.constantName}.${constantKey}}`,
+                                                `确认修改后调用 confirm_and_commit 提交代码`
+                                            ]
+                                            : [
+                                                `1. 在常量文件 \`${suggestions.constantFile}\` 中添加：\`${suggestions.constantName}.${constantKey} = '${testId}'\``,
+                                                `2. 在组件中使用：\`data-testid={${suggestions.constantName}.${constantKey}}\``,
+                                                `3. 或使用工具：\`add_testid_to_constant\` 手动添加常量`,
+                                                `4. 确认修改后调用 \`confirm_and_commit\` 提交代码`
+                                            ]
                                     }
                                 }, null, 2)
                             }
@@ -299,40 +354,34 @@ async function createServer() {
                     if (!commitMessage) {
                         throw new McpError(ErrorCode.InvalidParams, 'commitMessage 是必需的参数');
                     }
-                    if (!pendingChanges) {
-                        return {
-                            content: [
-                                {
-                                    type: 'text',
-                                    text: JSON.stringify({
-                                        success: false,
-                                        message: '没有待提交的更改。请先调用 add_testid 添加 testid。'
-                                    }, null, 2)
-                                }
-                            ]
-                        };
-                    }
                     const gitOps = new GitOperations(process.cwd());
-                    // 1. 先执行 lint 检查
-                    const lintResult = await gitOps.runLint();
-                    if (!lintResult.success) {
-                        return {
-                            content: [
-                                {
-                                    type: 'text',
-                                    text: JSON.stringify({
-                                        success: false,
-                                        message: lintResult.message,
-                                        error: lintResult.error,
-                                        nextStep: '请修复 lint 错误后重试'
-                                    }, null, 2)
-                                }
-                            ]
-                        };
-                    }
-                    // 2. 获取当前分支（不切换分支，直接在当前分支提交）
+                    // 获取当前分支（不切换分支，直接在当前分支提交）
                     const currentBranch = await gitOps.getCurrentBranch();
-                    // 3. 提交前先拉取最新代码，避免冲突
+                    // 如果没有待提交的更改，检查是否有未暂存的文件
+                    let filesToCommit = [];
+                    if (!pendingChanges) {
+                        const unstagedFiles = await gitOps.getUnstagedFiles();
+                        if (unstagedFiles.length === 0) {
+                            return {
+                                content: [
+                                    {
+                                        type: 'text',
+                                        text: JSON.stringify({
+                                            success: false,
+                                            message: '没有待提交的更改。请先调用 add_testid 添加 testid，或确保工作区有未暂存的文件。'
+                                        }, null, 2)
+                                    }
+                                ]
+                            };
+                        }
+                        // 如果有未暂存的文件，使用这些文件
+                        filesToCommit = unstagedFiles;
+                    }
+                    else {
+                        // 如果有待提交的更改，使用指定的文件
+                        filesToCommit = [pendingChanges.filePath];
+                    }
+                    // 提交前先拉取最新代码，避免冲突
                     const pullResult = await gitOps.pullFromRemote('origin', currentBranch);
                     if (!pullResult.success) {
                         // 如果是冲突错误，直接返回，不继续提交
@@ -354,28 +403,7 @@ async function createServer() {
                         // 其他错误（网络问题、远程分支不存在等），记录警告但继续提交
                         // 这些情况下本地提交仍然有效
                     }
-                    // 4. 收集需要提交的文件（使用相对路径）
-                    const filesToCommit = [];
-                    const { relative } = await import('path');
-                    const rootDir = process.cwd();
-                    // 4.1 添加添加了 data-testid 的代码文件
-                    const codeFileRelative = relative(rootDir, pendingChanges.filePath);
-                    filesToCommit.push(codeFileRelative);
-                    // 4.2 查找所有修改过的常量文件
-                    const modifiedFiles = await gitOps.getModifiedFiles();
-                    const constantFiles = await findTestConstantFiles(rootDir);
-                    // 找出所有修改过的常量文件
-                    for (const constantFile of constantFiles) {
-                        // 转换为相对路径
-                        const constantFileRelative = relative(rootDir, constantFile);
-                        // 检查文件是否在修改列表中
-                        if (modifiedFiles.includes(constantFileRelative) || modifiedFiles.includes(constantFile)) {
-                            if (!filesToCommit.includes(constantFileRelative)) {
-                                filesToCommit.push(constantFileRelative);
-                            }
-                        }
-                    }
-                    // 5. 提交更改（只提交相关文件）
+                    // 提交更改
                     const result = await gitOps.commitChanges(filesToCommit, commitMessage);
                     if (!result.success) {
                         return {
@@ -479,15 +507,14 @@ async function createServer() {
                             prDescription = `【问题原因】\n${prDescription}\n\n【改动思路】`;
                         }
                     }
-                    // 从当前分支创建 PR 到目标分支（baseBranch，默认为 develop）
-                    // 默认添加评审人：Kevin.King、johntsai、Roy.Liu
-                    const result = await gitOps.createPullRequest(prTitle, prDescription, baseBranch, {
+                    // 从当前分支创建 PR 到当前分支（来源和目标都是当前分支）
+                    const result = await gitOps.createPullRequest(prTitle, prDescription, undefined, // baseBranch 已废弃，使用当前分支作为目标分支
+                    {
                         baseUrl,
                         username,
                         password,
                         projectKey,
-                        repositorySlug,
-                        reviewers: ['Kevin.King', 'johntsai', 'Roy.Liu']
+                        repositorySlug
                     });
                     return {
                         content: [
@@ -499,28 +526,94 @@ async function createServer() {
                     };
                 }
                 case 'start_preview': {
+                    try {
+                        const projectPath = args?.projectPath || process.cwd();
+                        const port = args?.port || 3000;
+                        const wsPort = 3001;
+                        // 1. 检查并清理 3000 端口
+                        const portManager = new PortManager();
+                        await portManager.cleanPort(port);
+                        // 2. 启动前端项目
+                        const devServer = new DevServer(projectPath, port);
+                        await devServer.start();
+                        // 3. 等待 5 秒
+                        console.error('Waiting 5 seconds for dev server to be ready...');
+                        await new Promise(resolve => setTimeout(resolve, 5000));
+                        // 4. 确保 WebSocket 服务器已启动（使用 3001 端口）
+                        if (!previewServer) {
+                            previewServer = new PreviewServer({
+                                targetUrl: `http://localhost:${port}`,
+                                port: wsPort
+                            });
+                            await previewServer.start();
+                            console.error(`WebSocket server started on port ${wsPort}`);
+                        }
+                        // 5. 生成注入脚本 URL
+                        const targetUrl = `http://localhost:${port}`;
+                        const injectScriptUrl = `http://localhost:${wsPort}/inject-script.js`;
+                        const injectScriptCode = `fetch('${injectScriptUrl}').then(r => r.text()).then(eval);`;
+                        return {
+                            content: [{
+                                    type: 'text',
+                                    text: JSON.stringify({
+                                        success: true,
+                                        message: `前端项目已启动！`,
+                                        projectPath: projectPath,
+                                        targetUrl: targetUrl,
+                                        wsPort: wsPort,
+                                        injectScriptUrl: injectScriptUrl,
+                                        injectScriptCode: injectScriptCode,
+                                        instructions: [
+                                            `✅ 前端项目已在端口 ${port} 启动`,
+                                            `✅ WebSocket 服务器已在端口 ${wsPort} 启动`,
+                                            ``,
+                                            `请在 Cursor 内置浏览器中打开：${targetUrl}`,
+                                            ``,
+                                            `Cursor 会自动注入元素选择脚本，页面右侧会显示控制面板`,
+                                            `点击"开始选择元素"按钮即可开始选择`,
+                                            ``,
+                                            `如果脚本未自动注入，可以在控制台手动执行：`,
+                                            `${injectScriptCode}`
+                                        ].join('\n'),
+                                        autoInject: {
+                                            url: targetUrl,
+                                            script: injectScriptCode,
+                                            description: 'Cursor 会自动在目标网页中注入脚本'
+                                        },
+                                        nextStep: `在 Cursor 中打开 ${targetUrl} 开始选择元素`
+                                    }, null, 2)
+                                }]
+                        };
+                    }
+                    catch (error) {
+                        return {
+                            content: [{
+                                    type: 'text',
+                                    text: JSON.stringify({
+                                        success: false,
+                                        error: error instanceof Error ? error.message : String(error),
+                                        message: '启动前端项目预览失败'
+                                    }, null, 2)
+                                }]
+                        };
+                    }
+                }
+                case 'start_debug': {
                     const { targetUrl, port } = args;
                     if (!targetUrl) {
                         throw new McpError(ErrorCode.InvalidParams, 'targetUrl 是必需的参数');
-                    }
-                    // 强制要求 targetUrl 必须是 http://localhost:3000
-                    const normalizedUrl = targetUrl.trim().toLowerCase();
-                    if (normalizedUrl !== 'http://localhost:3000' && normalizedUrl !== 'http://127.0.0.1:3000') {
-                        throw new McpError(ErrorCode.InvalidParams, `targetUrl 必须是 http://localhost:3000，当前值：${targetUrl}`);
                     }
                     try {
                         // 如果已有服务器在运行，先停止
                         if (previewServer) {
                             previewServer.stop();
                         }
-                        // 创建新的预览服务器（强制使用 http://localhost:3000）
+                        // 创建新的预览服务器
                         previewServer = new PreviewServer({
-                            targetUrl: 'http://localhost:3000',
+                            targetUrl,
                             port: port || 3001
                         });
                         const { url, port: actualPort } = await previewServer.start();
-                        // 自动打开预览浏览器
-                        await openBrowser(url);
                         // 生成注入脚本代码
                         const injectScriptCode = `fetch('http://localhost:${actualPort}/inject-script.js').then(r => r.text()).then(eval);`;
                         const injectScriptUrl = `http://localhost:${actualPort}/inject-script.js`;
@@ -530,19 +623,22 @@ async function createServer() {
                                     type: 'text',
                                     text: JSON.stringify({
                                         success: true,
-                                        message: `预览服务器已启动（端口 ${actualPort}），浏览器已自动打开`,
-                                        previewUrl: url,
-                                        targetUrl: 'http://localhost:3000',
+                                        message: `调试页面已启动（端口 ${actualPort}）`,
+                                        debugPageUrl: url,
+                                        targetUrl: targetUrl,
                                         injectScriptUrl: injectScriptUrl,
                                         injectScriptCode: injectScriptCode,
-                                        instructions: `预览浏览器已自动打开。请在目标网页（http://localhost:3000）的控制台中执行以下代码来注入脚本：`,
-                                        autoInject: {
-                                            url: 'http://localhost:3000',
-                                            script: injectScriptCode,
-                                            description: '使用浏览器扩展工具自动在目标网页的控制台中执行脚本'
-                                        },
-                                        manualFallback: `如果自动注入失败，可以手动在目标网页的控制台中运行：${injectScriptCode}`,
-                                        nextStep: '脚本注入后，页面右侧会显示控制面板，点击"开始选择元素"按钮即可开始选择'
+                                        instructions: [
+                                            `✅ 调试页面已启动：${url}`,
+                                            `✅ 目标网页：${targetUrl}`,
+                                            ``,
+                                            `使用步骤：`,
+                                            `1. 打开调试页面：${url}`,
+                                            `2. 按照页面说明在目标网页中注入脚本`,
+                                            `3. 在目标网页中选择元素`,
+                                            `4. 在调试页面的控制面板中查看元素信息`
+                                        ].join('\n'),
+                                        nextStep: `打开浏览器访问 ${url} 查看完整使用说明`
                                     }, null, 2)
                                 }
                             ]
@@ -556,7 +652,7 @@ async function createServer() {
                                     text: JSON.stringify({
                                         success: false,
                                         error: error instanceof Error ? error.message : String(error),
-                                        message: '启动预览服务器失败'
+                                        message: '启动调试页面失败'
                                     }, null, 2)
                                 }
                             ]
