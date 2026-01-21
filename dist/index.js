@@ -514,7 +514,8 @@ async function createServer() {
                         username,
                         password,
                         projectKey,
-                        repositorySlug
+                        repositorySlug,
+                        reviewers: ['Kevin.King', 'johntsai', 'Roy.Liu']
                     });
                     return {
                         content: [

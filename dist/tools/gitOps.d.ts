@@ -57,6 +57,7 @@ export declare class GitOperations {
         password?: string;
         projectKey?: string;
         repositorySlug?: string;
+        reviewers?: string[];
     }): Promise<GitOperationResult>;
     /**
      * 完整的提交流程：commit -> push -> create PR
@@ -67,6 +68,7 @@ export declare class GitOperations {
         password?: string;
         projectKey?: string;
         repositorySlug?: string;
+        reviewers?: string[];
     }): Promise<GitOperationResult>;
 }
 //# sourceMappingURL=gitOps.d.ts.map

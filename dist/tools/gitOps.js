@@ -365,6 +365,11 @@ export class GitOperations {
             // Bitbucket Server 支持 Basic Auth 和 OAuth
             // Personal Access Token 可以直接作为密码使用
             const auth = Buffer.from(`${username}:${password}`).toString('base64');
+            // 评审人（默认三人）
+            const reviewers = bitbucketConfig?.reviewers || ['Kevin.King', 'johntsai', 'Roy.Liu'];
+            const reviewersArray = reviewers.map(name => ({
+                user: { name }
+            }));
             // 调用 Bitbucket Server API 创建 Pull Request
             // 请求体格式参考: https://docs.atlassian.com/bitbucket-server/rest/5.16.0/bitbucket-rest.html#idm8297063984
             const response = await fetch(apiUrl, {
@@ -393,7 +398,8 @@ export class GitOperations {
                                 key: toProjectKey
                             }
                         }
-                    }
+                    },
+                    reviewers: reviewersArray
                 })
             });
             if (!response.ok) {
