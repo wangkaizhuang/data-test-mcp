@@ -5,40 +5,46 @@ import simpleGit from 'simple-git';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { existsSync } from 'fs';
-import { join, resolve } from 'path';
+import { join, dirname } from 'path';
 const execAsync = promisify(exec);
+/**
+ * 查找 Git 仓库根目录
+ * 从指定目录开始向上查找，直到找到 .git 目录
+ */
+export function findGitRoot(startDir = process.cwd()) {
+    let currentDir = startDir;
+    // 最多向上查找 10 层
+    for (let i = 0; i < 10; i++) {
+        const gitPath = join(currentDir, '.git');
+        if (existsSync(gitPath)) {
+            console.error(`[GitOps] Found .git directory at: ${currentDir}`);
+            return currentDir;
+        }
+        const parentDir = dirname(currentDir);
+        // 到达根目录（Windows: C:\, Mac/Linux: /）
+        if (parentDir === currentDir) {
+            break;
+        }
+        currentDir = parentDir;
+    }
+    console.error(`[GitOps] No .git directory found from: ${startDir}`);
+    return null;
+}
+/**
+ * 从文件路径中提取 Git 仓库根目录
+ * 例如：C:\Users\...\project\src\components\Button.tsx -> C:\Users\...\project
+ */
+export function findGitRootFromFile(filePath) {
+    // 获取文件所在目录
+    const fileDir = dirname(filePath);
+    return findGitRoot(fileDir);
+}
 export class GitOperations {
     git;
     rootDir;
     constructor(rootDir = process.cwd()) {
-        // 自动查找 Git 仓库根目录
-        const gitRoot = this.findGitRoot(rootDir);
-        if (!gitRoot) {
-            throw new Error(`未找到 Git 仓库。当前目录: ${rootDir}\n请确保在 Git 仓库目录中运行，或提供正确的项目路径。`);
-        }
-        this.rootDir = gitRoot;
-        this.git = simpleGit(gitRoot);
-    }
-    /**
-     * 查找 Git 仓库根目录（向上查找 .git 目录）
-     */
-    findGitRoot(startDir) {
-        let currentDir = resolve(startDir);
-        const root = resolve('/');
-        while (currentDir !== root) {
-            const gitDir = join(currentDir, '.git');
-            if (existsSync(gitDir)) {
-                return currentDir;
-            }
-            // 向上查找父目录
-            const parentDir = resolve(currentDir, '..');
-            if (parentDir === currentDir) {
-                // 已经到达根目录
-                break;
-            }
-            currentDir = parentDir;
-        }
-        return null;
+        this.rootDir = rootDir;
+        this.git = simpleGit(rootDir);
     }
     /**
      * 检查工作区状态
@@ -48,70 +54,59 @@ export class GitOperations {
         return status.files.map(f => `${f.path} (${f.index})`).join('\n');
     }
     /**
-     * 获取所有未暂存的文件（包括修改和新增的文件）
+     * 检查是否有未提交的改动（工作区或暂存区）
+     * 跨平台兼容，适用于 Mac、Windows、Linux
      */
-    async getUnstagedFiles() {
+    async hasUncommittedChanges() {
         try {
             const status = await this.git.status();
-            // 获取所有未暂存的文件（working_dir 不为 ' ' 表示有修改）
-            const unstagedFiles = status.files
-                .filter(f => f.working_dir !== ' ' && f.working_dir !== '?')
-                .map(f => f.path);
-            return unstagedFiles;
+            // isClean() 返回 true 表示没有任何改动
+            // 返回 false 表示工作区干净
+            return !status.isClean();
         }
         catch (error) {
-            return [];
-        }
-    }
-    /**
-     * 检查是否有任何改动（暂存区或工作区）
-     */
-    async hasChanges() {
-        try {
-            const status = await this.git.status();
-            // 方法1: 使用 status 的统计信息（更可靠）
-            const hasStaged = (status.staged.length > 0) ||
-                (status.created.length > 0) ||
-                (status.deleted.length > 0) ||
-                (status.modified.length > 0) ||
-                (status.renamed.length > 0);
-            const hasUnstaged = (status.not_added.length > 0) ||
-                (status.conflicted.length > 0);
-            // 方法2: 检查 files 数组（备用方法）
-            // index: 'A'=新增, 'M'=修改, 'D'=删除, 'R'=重命名, 'C'=复制, ' '=无变化
-            // working_dir: 同上，'?'=未跟踪
-            const hasStagedFiles = status.files.some(f => {
-                const index = f.index || '';
-                return index !== ' ' && index !== '' && index !== '?';
-            });
-            const hasUnstagedFiles = status.files.some(f => {
-                const workingDir = f.working_dir || '';
-                return workingDir !== ' ' && workingDir !== '' && workingDir !== '?';
-            });
-            // 两种方法任一为 true 就返回 true
-            return hasStaged || hasUnstaged || hasStagedFiles || hasUnstagedFiles;
-        }
-        catch (error) {
-            console.error('[hasChanges] Error:', error);
+            console.error('[GitOps] Failed to check uncommitted changes:', error);
             return false;
         }
     }
     /**
-     * 添加所有改动到暂存区（git add --all）
+     * 获取未提交的改动文件列表
+     */
+    async getUncommittedFiles() {
+        try {
+            const status = await this.git.status();
+            // 返回所有有改动的文件（包括工作区和暂存区）
+            return status.files.map(f => f.path);
+        }
+        catch (error) {
+            console.error('[GitOps] Failed to get uncommitted files:', error);
+            return [];
+        }
+    }
+    /**
+     * 添加所有改动到暂存区 (git add --all)
      */
     async addAll() {
         try {
-            await this.git.add('.');
+            // 先获取有改动的文件列表
+            const filesBefore = await this.getUncommittedFiles();
+            // 执行 git add --all
+            await this.git.add('--all');
+            // 检查暂存区文件
+            const status = await this.git.status();
+            const stagedFiles = status.files
+                .filter(f => f.index !== ' ' && f.index !== '?')
+                .map(f => f.path);
             return {
-                success: true,
-                message: '已将所有改动添加到暂存区'
+                success: stagedFiles.length > 0,
+                filesAdded: stagedFiles
             };
         }
         catch (error) {
+            console.error('[GitOps] Failed to add all files:', error);
             return {
                 success: false,
-                error: error instanceof Error ? error.message : String(error),
-                message: '添加文件到暂存区失败'
+                filesAdded: []
             };
         }
     }
@@ -200,65 +195,33 @@ export class GitOperations {
         }
     }
     /**
-     * 提交所有已暂存的更改（git commit）
+     * 提交暂存区的所有更改
+     * 用于 git add --all 后的提交
      */
-    async commitAll(message) {
+    async commitAllStaged(message) {
         try {
-            // 1. 先尝试添加所有文件（确保所有改动都在暂存区）
-            await this.git.add('.');
-            // 2. 检查是否有已暂存的文件
+            // 1. 检查暂存区是否有文件
             const status = await this.git.status();
-            // 使用多种方式检查暂存区
-            const stagedCount = status.staged.length +
-                status.created.length +
-                status.deleted.length +
-                status.modified.length +
-                status.renamed.length;
-            // 也检查 files 数组
-            const stagedFiles = status.files.filter(f => {
-                const index = f.index || '';
-                return index !== ' ' && index !== '' && index !== '?';
-            });
-            const totalStaged = stagedCount > 0 ? stagedCount : stagedFiles.length;
-            if (totalStaged === 0) {
+            const stagedFiles = status.files.filter(f => f.index !== ' ' && f.index !== '?');
+            if (stagedFiles.length === 0) {
                 return {
                     success: false,
-                    message: '暂存区没有需要提交的更改，工作区也没有未暂存的文件',
-                    details: {
-                        gitRoot: this.rootDir,
-                        hint: '请确保工作区或暂存区有改动'
-                    }
+                    message: '暂存区没有需要提交的更改'
                 };
             }
-            // 3. 提交所有已暂存的文件
+            // 2. 提交暂存区的所有文件
             await this.git.commit(message);
             return {
                 success: true,
-                message: `成功提交 ${totalStaged} 个文件: ${message}`,
-                details: {
-                    gitRoot: this.rootDir,
-                    filesCount: totalStaged
-                }
+                message: `成功提交 ${stagedFiles.length} 个文件: ${message}`,
+                filesCommitted: stagedFiles.map(f => f.path)
             };
         }
         catch (error) {
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            // 提供更详细的错误信息
-            let detailedMessage = '提交失败';
-            if (errorMessage.includes('not a git repository')) {
-                detailedMessage = `提交失败：当前目录不是 Git 仓库\nGit 仓库根目录: ${this.rootDir}\n请确保在正确的 Git 仓库目录中运行。`;
-            }
-            else if (errorMessage.includes('nothing to commit')) {
-                detailedMessage = '提交失败：没有需要提交的更改';
-            }
             return {
                 success: false,
-                error: errorMessage,
-                message: detailedMessage,
-                details: {
-                    gitRoot: this.rootDir,
-                    currentDir: process.cwd()
-                }
+                error: error instanceof Error ? error.message : String(error),
+                message: '提交失败'
             };
         }
     }

@@ -2,30 +2,40 @@
  * Git 操作工具
  */
 import type { GitOperationResult } from '../types/element.js';
+/**
+ * 查找 Git 仓库根目录
+ * 从指定目录开始向上查找，直到找到 .git 目录
+ */
+export declare function findGitRoot(startDir?: string): string | null;
+/**
+ * 从文件路径中提取 Git 仓库根目录
+ * 例如：C:\Users\...\project\src\components\Button.tsx -> C:\Users\...\project
+ */
+export declare function findGitRootFromFile(filePath: string): string | null;
 export declare class GitOperations {
     private git;
     private rootDir;
     constructor(rootDir?: string);
     /**
-     * 查找 Git 仓库根目录（向上查找 .git 目录）
-     */
-    private findGitRoot;
-    /**
      * 检查工作区状态
      */
     getStatus(): Promise<string>;
     /**
-     * 获取所有未暂存的文件（包括修改和新增的文件）
+     * 检查是否有未提交的改动（工作区或暂存区）
+     * 跨平台兼容，适用于 Mac、Windows、Linux
      */
-    getUnstagedFiles(): Promise<string[]>;
+    hasUncommittedChanges(): Promise<boolean>;
     /**
-     * 检查是否有任何改动（暂存区或工作区）
+     * 获取未提交的改动文件列表
      */
-    hasChanges(): Promise<boolean>;
+    getUncommittedFiles(): Promise<string[]>;
     /**
-     * 添加所有改动到暂存区（git add --all）
+     * 添加所有改动到暂存区 (git add --all)
      */
-    addAll(): Promise<GitOperationResult>;
+    addAll(): Promise<{
+        success: boolean;
+        filesAdded: string[];
+    }>;
     /**
      * 拉取远程最新代码
      */
@@ -36,9 +46,10 @@ export declare class GitOperations {
      */
     commitChanges(files: string[], message: string): Promise<GitOperationResult>;
     /**
-     * 提交所有已暂存的更改（git commit）
+     * 提交暂存区的所有更改
+     * 用于 git add --all 后的提交
      */
-    commitAll(message: string): Promise<GitOperationResult>;
+    commitAllStaged(message: string): Promise<GitOperationResult>;
     /**
      * 检查分支是否存在
      */

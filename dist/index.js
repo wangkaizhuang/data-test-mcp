@@ -9,29 +9,47 @@ import { CallToolRequestSchema, ListToolsRequestSchema, ErrorCode, McpError } fr
 import { addTestIdToElement, applyCodeModification } from './tools/addTestId.js';
 import { locateComponentFileByInfo } from './utils/fileLocator.js';
 import { extractTagName, extractClassName } from './tools/elementParser.js';
-import { GitOperations } from './tools/gitOps.js';
+import { GitOperations, findGitRoot, findGitRootFromFile } from './tools/gitOps.js';
 import { PreviewServer } from './tools/previewServer.js';
 import { generateTestIdSuggestions, addTestIdToConstant, generateConstantName } from './utils/testIdHelper.js';
 import { PortManager } from './utils/portManager.js';
 import { DevServer } from './tools/devServer.js';
 let pendingChanges = null;
-/**
- * 安全地创建 GitOperations 实例，自动查找 Git 仓库根目录
- */
-function createGitOperations(startDir = process.cwd()) {
-    try {
-        const gitOps = new GitOperations(startDir);
-        return { gitOps };
-    }
-    catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        return {
-            gitOps: null, // 类型断言，实际不会使用
-            error: errorMessage
-        };
-    }
-}
 let previewServer = null;
+let cachedProjectRoot = null; // 缓存检测到的项目根目录
+/**
+ * 获取项目根目录（智能检测并缓存）
+ */
+function getProjectRoot(fallbackFilePath) {
+    // 如果已经缓存，直接返回
+    if (cachedProjectRoot) {
+        return cachedProjectRoot;
+    }
+    let projectRoot = null;
+    // 策略 1: 从提供的文件路径中查找
+    if (fallbackFilePath) {
+        projectRoot = findGitRootFromFile(fallbackFilePath);
+        console.error(`[getProjectRoot] Found from file: ${projectRoot}`);
+    }
+    // 策略 2: 从 pendingChanges 中查找
+    if (!projectRoot && pendingChanges) {
+        projectRoot = findGitRootFromFile(pendingChanges.filePath);
+        console.error(`[getProjectRoot] Found from pending: ${projectRoot}`);
+    }
+    // 策略 3: 从当前工作目录向上查找
+    if (!projectRoot) {
+        projectRoot = findGitRoot(process.cwd());
+        console.error(`[getProjectRoot] Found from cwd: ${projectRoot}`);
+    }
+    // 缓存结果
+    if (projectRoot) {
+        cachedProjectRoot = projectRoot;
+        return projectRoot;
+    }
+    // 实在找不到，返回 process.cwd()（可能会出错，但保持向后兼容）
+    console.error(`[getProjectRoot] Fallback to cwd: ${process.cwd()}`);
+    return process.cwd();
+}
 /**
  * 创建 MCP Server
  */
@@ -239,7 +257,8 @@ async function createServer() {
                             domPath: elementPath,
                             componentInfo: componentName ? { name: componentName } : undefined
                         };
-                        const locatedPath = await locateComponentFileByInfo(componentName, elementPath, process.cwd());
+                        const projectRoot = getProjectRoot();
+                        const locatedPath = await locateComponentFileByInfo(componentName, elementPath, projectRoot);
                         if (!locatedPath) {
                             return {
                                 content: [
@@ -255,6 +274,8 @@ async function createServer() {
                         }
                         filePath = locatedPath;
                     }
+                    // 更新缓存的项目根目录（使用定位到的文件）
+                    getProjectRoot(filePath);
                     // 添加 testid
                     const elementInfo = {
                         domPath: elementPath,
@@ -262,23 +283,13 @@ async function createServer() {
                     };
                     const result = await addTestIdToElement(filePath, elementInfo, testId);
                     if (!result.success) {
-                        let errorMessage = result.message || result.error || '未知错误';
-                        // 如果包含位置信息，添加到错误消息中
-                        if (result.location) {
-                            errorMessage += `\n\n📍 位置信息：\n`;
-                            errorMessage += `文件: ${result.location.filePath}\n`;
-                            errorMessage += `行号: ${result.location.line}\n`;
-                            errorMessage += `列号: ${result.location.column}\n`;
-                            errorMessage += `\n💡 提示：请检查该位置的代码是否正确。`;
-                        }
                         return {
                             content: [
                                 {
                                     type: 'text',
                                     text: JSON.stringify({
                                         success: false,
-                                        message: errorMessage,
-                                        location: result.location
+                                        message: result.message || result.error
                                     }, null, 2)
                                 }
                             ]
@@ -290,21 +301,13 @@ async function createServer() {
                         testId,
                         elementInfo
                     };
-                    // 先返回位置信息，让用户确认位置
-                    let locationMessage = '';
-                    if (result.location) {
-                        locationMessage = `\n\n📍 **代码位置**：\n`;
-                        locationMessage += `- 文件: \`${result.location.filePath}\`\n`;
-                        locationMessage += `- 行号: ${result.location.line}\n`;
-                        locationMessage += `- 列号: ${result.location.column}\n`;
-                        locationMessage += `\n💡 请确认该位置的代码是否正确，然后继续。\n`;
-                    }
                     // 应用修改
                     if (result.preview) {
                         await applyCodeModification(result.filePath, result.preview);
                     }
                     // 生成智能提示
-                    const suggestions = await generateTestIdSuggestions(elementPath, testId, componentName, filePath, process.cwd());
+                    const projectRoot = getProjectRoot(filePath);
+                    const suggestions = await generateTestIdSuggestions(elementPath, testId, componentName, filePath, projectRoot);
                     const constantKey = generateConstantName(elementPath, testId, componentName);
                     // 自动添加到常量文件
                     console.error('[add_testid] Attempting to add testId to constant file...');
@@ -324,9 +327,8 @@ async function createServer() {
                                 type: 'text',
                                 text: JSON.stringify({
                                     success: true,
-                                    message: `✅ 成功为元素添加 data-testid="${testId}"${locationMessage}`,
+                                    message: `成功为元素添加 data-testid="${testId}"`,
                                     filePath: result.filePath,
-                                    location: result.location,
                                     diff: result.diff,
                                     preview: '代码已修改，请检查文件确认无误后调用 confirm_and_commit 提交更改。',
                                     constantUpdate: constantResult ? {
@@ -370,19 +372,31 @@ async function createServer() {
                     if (!commitMessage) {
                         throw new McpError(ErrorCode.InvalidParams, 'commitMessage 是必需的参数');
                     }
-                    // 尝试初始化 GitOperations，会自动查找 Git 仓库根目录
-                    const { gitOps, error: gitError } = createGitOperations(process.cwd());
-                    if (gitError || !gitOps) {
+                    // 智能检测项目根目录
+                    let projectRoot = null;
+                    // 策略 1: 如果有 pendingChanges，从文件路径中提取项目根目录
+                    if (pendingChanges) {
+                        projectRoot = findGitRootFromFile(pendingChanges.filePath);
+                        console.error(`[confirm_and_commit] Detected Git root from pending file: ${projectRoot}`);
+                    }
+                    // 策略 2: 从当前工作目录向上查找 .git 目录
+                    if (!projectRoot) {
+                        projectRoot = findGitRoot(process.cwd());
+                        console.error(`[confirm_and_commit] Detected Git root from cwd: ${projectRoot}`);
+                    }
+                    // 都找不到，返回错误
+                    if (!projectRoot) {
                         return {
                             content: [
                                 {
                                     type: 'text',
                                     text: JSON.stringify({
                                         success: false,
-                                        message: gitError || '无法初始化 Git 操作',
-                                        error: gitError,
+                                        message: `未找到 Git 仓库。当前目录: ${process.cwd()}\n请确保在 Git 仓库目录中运行，或提供正确的项目路径。`,
+                                        error: `未找到 Git 仓库。当前目录: ${process.cwd()}\n请确保在 Git 仓库目录中运行，或提供正确的项目路径。`,
                                         details: {
                                             currentDir: process.cwd(),
+                                            pendingFile: pendingChanges?.filePath,
                                             hint: '请确保在 Git 仓库目录中运行，或检查当前工作目录是否正确'
                                         }
                                     }, null, 2)
@@ -390,14 +404,11 @@ async function createServer() {
                             ]
                         };
                     }
+                    const gitOps = new GitOperations(projectRoot);
                     // 获取当前分支（不切换分支，直接在当前分支提交）
                     const currentBranch = await gitOps.getCurrentBranch();
-                    // 直接尝试提交，commitAll 内部会：
-                    // 1. 先执行 git add . 确保所有改动都在暂存区
-                    // 2. 检查是否有已暂存的文件
-                    // 3. 如果没有改动，会返回错误
-                    // 这样更可靠，不依赖 hasChanges 的检测结果
                     // 提交前先拉取最新代码，避免冲突
+                    console.error('[confirm_and_commit] Pulling from remote...');
                     const pullResult = await gitOps.pullFromRemote('origin', currentBranch);
                     if (!pullResult.success) {
                         // 如果是冲突错误，直接返回，不继续提交
@@ -417,11 +428,58 @@ async function createServer() {
                             };
                         }
                         // 其他错误（网络问题、远程分支不存在等），记录警告但继续提交
-                        // 这些情况下本地提交仍然有效
+                        console.error('[confirm_and_commit] Pull warning (will continue):', pullResult.message);
                     }
-                    // 提交所有已暂存的更改（使用 git commit -a 或直接 commit）
-                    // 由于已经执行了 git add --all，所有改动都在暂存区，直接提交即可
-                    const result = await gitOps.commitAll(commitMessage);
+                    let result;
+                    let commitMode = 'none';
+                    // 判断提交模式
+                    if (pendingChanges) {
+                        // 模式 1: 有 pendingChanges，只提交指定文件
+                        commitMode = 'pending';
+                        console.error('[confirm_and_commit] Mode: pending changes');
+                        console.error(`[confirm_and_commit] File to commit: ${pendingChanges.filePath}`);
+                        result = await gitOps.commitChanges([pendingChanges.filePath], commitMessage);
+                    }
+                    else {
+                        // 模式 2: 没有 pendingChanges，检查是否有其他改动
+                        console.error('[confirm_and_commit] Mode: checking for uncommitted changes');
+                        const hasChanges = await gitOps.hasUncommittedChanges();
+                        if (!hasChanges) {
+                            // 没有任何改动
+                            return {
+                                content: [
+                                    {
+                                        type: 'text',
+                                        text: JSON.stringify({
+                                            success: false,
+                                            message: '没有需要提交的更改。\n\n可能的原因：\n  1. 工作区和暂存区都是干净的\n  2. 还没有调用 add_testid 添加任何修改\n  3. 所有改动已经提交过了'
+                                        }, null, 2)
+                                    }
+                                ]
+                            };
+                        }
+                        // 有改动，执行 git add --all
+                        commitMode = 'all';
+                        console.error('[confirm_and_commit] Found uncommitted changes, executing git add --all');
+                        const addResult = await gitOps.addAll();
+                        if (!addResult.success) {
+                            return {
+                                content: [
+                                    {
+                                        type: 'text',
+                                        text: JSON.stringify({
+                                            success: false,
+                                            message: '执行 git add --all 失败，没有文件被添加到暂存区'
+                                        }, null, 2)
+                                    }
+                                ]
+                            };
+                        }
+                        console.error(`[confirm_and_commit] Added ${addResult.filesAdded.length} files to staging area`);
+                        console.error(`[confirm_and_commit] Files: ${addResult.filesAdded.join(', ')}`);
+                        // 提交所有暂存区的文件
+                        result = await gitOps.commitAllStaged(commitMessage);
+                    }
                     if (!result.success) {
                         return {
                             content: [
@@ -434,8 +492,12 @@ async function createServer() {
                     }
                     // 推送到远程（如果需要）
                     if (autoPush) {
+                        console.error('[confirm_and_commit] Pushing to remote...');
                         // 不传递分支参数，使用当前分支，直接执行 git push
                         const pushResult = await gitOps.pushToRemote();
+                        const filesInfo = result.filesCommitted
+                            ? `\n  提交文件数: ${result.filesCommitted.length}\n  文件列表: ${result.filesCommitted.slice(0, 5).join(', ')}${result.filesCommitted.length > 5 ? '...' : ''}`
+                            : '';
                         if (pushResult.success) {
                             return {
                                 content: [
@@ -444,7 +506,12 @@ async function createServer() {
                                         text: JSON.stringify({
                                             success: true,
                                             message: `代码已提交并推送`,
+                                            commitMode: commitMode === 'pending' ? '只提交指定文件' : '提交所有改动 (git add --all)',
                                             branch: currentBranch,
+                                            filesCommitted: result.filesCommitted,
+                                            summary: commitMode === 'pending'
+                                                ? `已提交文件: ${pendingChanges.filePath}`
+                                                : `已提交 ${result.filesCommitted?.length || 0} 个文件${filesInfo}`,
                                             nextStep: '可以调用 create_pr 创建 Pull Request'
                                         }, null, 2)
                                     }
@@ -459,7 +526,9 @@ async function createServer() {
                                         text: JSON.stringify({
                                             success: true,
                                             message: `代码已提交到分支 ${currentBranch}，但推送失败`,
+                                            commitMode: commitMode === 'pending' ? '只提交指定文件' : '提交所有改动 (git add --all)',
                                             branch: currentBranch,
+                                            filesCommitted: result.filesCommitted,
                                             pushError: pushResult.error,
                                             nextStep: '可以手动执行 git push 或调用 create_pr 创建 Pull Request'
                                         }, null, 2)
@@ -468,6 +537,9 @@ async function createServer() {
                             };
                         }
                     }
+                    const filesInfo = result.filesCommitted
+                        ? `\n  提交文件数: ${result.filesCommitted.length}\n  文件列表: ${result.filesCommitted.slice(0, 5).join(', ')}${result.filesCommitted.length > 5 ? '...' : ''}`
+                        : '';
                     return {
                         content: [
                             {
@@ -475,7 +547,12 @@ async function createServer() {
                                 text: JSON.stringify({
                                     success: true,
                                     message: result.message,
+                                    commitMode: commitMode === 'pending' ? '只提交指定文件' : '提交所有改动 (git add --all)',
                                     branch: currentBranch,
+                                    filesCommitted: result.filesCommitted,
+                                    summary: commitMode === 'pending'
+                                        ? `已提交文件: ${pendingChanges.filePath}`
+                                        : `已提交 ${result.filesCommitted?.length || 0} 个文件${filesInfo}`,
                                     nextStep: autoPush ? '可以调用 create_pr 创建 Pull Request' : '可以手动执行 git push 或调用 create_pr 创建 Pull Request'
                                 }, null, 2)
                             }
@@ -502,26 +579,30 @@ async function createServer() {
                             ]
                         };
                     }
-                    // 尝试初始化 GitOperations，会自动查找 Git 仓库根目录
-                    const { gitOps, error: gitError } = createGitOperations(process.cwd());
-                    if (gitError || !gitOps) {
+                    // 智能检测项目根目录（同 confirm_and_commit 逻辑）
+                    let projectRoot = null;
+                    if (pendingChanges) {
+                        projectRoot = findGitRootFromFile(pendingChanges.filePath);
+                        console.error(`[create_pr] Detected Git root from pending file: ${projectRoot}`);
+                    }
+                    if (!projectRoot) {
+                        projectRoot = findGitRoot(process.cwd());
+                        console.error(`[create_pr] Detected Git root from cwd: ${projectRoot}`);
+                    }
+                    if (!projectRoot) {
                         return {
                             content: [
                                 {
                                     type: 'text',
                                     text: JSON.stringify({
                                         success: false,
-                                        message: gitError || '无法初始化 Git 操作',
-                                        error: gitError,
-                                        details: {
-                                            currentDir: process.cwd(),
-                                            hint: '请确保在 Git 仓库目录中运行，或检查当前工作目录是否正确'
-                                        }
+                                        message: `未找到 Git 仓库。当前目录: ${process.cwd()}\n请确保在 Git 仓库目录中运行。`
                                     }, null, 2)
                                 }
                             ]
                         };
                     }
+                    const gitOps = new GitOperations(projectRoot);
                     // 获取当前分支
                     const currentBranch = await gitOps.getCurrentBranch();
                     // 如果没有提供 title，使用最后一次 commit 的 message
@@ -550,8 +631,7 @@ async function createServer() {
                         username,
                         password,
                         projectKey,
-                        repositorySlug,
-                        reviewers: ['Kevin.King', 'johntsai', 'Roy.Liu']
+                        repositorySlug
                     });
                     return {
                         content: [
@@ -564,7 +644,7 @@ async function createServer() {
                 }
                 case 'start_preview': {
                     try {
-                        const projectPath = args?.projectPath || process.cwd();
+                        const projectPath = args?.projectPath || getProjectRoot();
                         const port = args?.port || 3000;
                         const wsPort = 3001;
                         // 1. 检查并清理 3000 端口
@@ -726,7 +806,8 @@ async function createServer() {
                     }
                     // 如果已有 testId，生成智能提示
                     if (selectedElement.testId && selectedElement.elementPath) {
-                        const suggestions = await generateTestIdSuggestions(selectedElement.elementPath, selectedElement.testId, selectedElement.componentName, undefined, process.cwd());
+                        const projectRoot = getProjectRoot();
+                        const suggestions = await generateTestIdSuggestions(selectedElement.elementPath, selectedElement.testId, selectedElement.componentName, undefined, projectRoot);
                         const constantKey = generateConstantName(selectedElement.elementPath, selectedElement.testId, selectedElement.componentName);
                         return {
                             content: [
@@ -778,14 +859,15 @@ async function createServer() {
                     let targetFile = constantFile;
                     if (!targetFile) {
                         const { findTestConstantFiles } = await import('./utils/testIdHelper.js');
-                        const files = await findTestConstantFiles(process.cwd());
+                        const projectRoot = getProjectRoot();
+                        const files = await findTestConstantFiles(projectRoot);
                         if (files.length > 0) {
                             targetFile = files[0];
                         }
                         else {
                             // 创建默认文件
                             const { join } = await import('path');
-                            targetFile = join(process.cwd(), 'test.constant.ts');
+                            targetFile = join(projectRoot, 'test.constant.ts');
                         }
                     }
                     const result = await addTestIdToConstant(targetFile, constantKey, testId);
