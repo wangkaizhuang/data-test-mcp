@@ -1,0 +1,1 @@
+{"version":3,"file":"portManager.d.ts","sourceRoot":"","sources":["../../src/utils/portManager.ts"],"names":[],"mappings":"AAAA;;;GAGG;AAOH,qBAAa,WAAW;IACtB;;OAEG;IACG,WAAW,CAAC,IAAI,EAAE,MAAM,GAAG,OAAO,CAAC,OAAO,CAAC;IASjD;;OAEG;IACG,QAAQ,CAAC,IAAI,EAAE,MAAM,GAAG,OAAO,CAAC,IAAI,CAAC;IAoB3C;;OAEG;IACG,SAAS,CAAC,IAAI,EAAE,MAAM,GAAG,OAAO,CAAC,IAAI,CAAC;CAW7C"}
