@@ -357,39 +357,11 @@ async function createServer() {
                     const gitOps = new GitOperations(process.cwd());
                     // 获取当前分支（不切换分支，直接在当前分支提交）
                     const currentBranch = await gitOps.getCurrentBranch();
-                    // 检查是否有任何改动（暂存区或工作区）
-                    const hasChanges = await gitOps.hasChanges();
-                    if (!hasChanges && !pendingChanges) {
-                        return {
-                            content: [
-                                {
-                                    type: 'text',
-                                    text: JSON.stringify({
-                                        success: false,
-                                        message: '没有待提交的更改。请先调用 add_testid 添加 testid，或确保工作区或暂存区有改动。'
-                                    }, null, 2)
-                                }
-                            ]
-                        };
-                    }
-                    // 如果有改动，先执行 git add --all
-                    if (hasChanges) {
-                        const addResult = await gitOps.addAll();
-                        if (!addResult.success) {
-                            return {
-                                content: [
-                                    {
-                                        type: 'text',
-                                        text: JSON.stringify({
-                                            success: false,
-                                            message: addResult.message,
-                                            error: addResult.error
-                                        }, null, 2)
-                                    }
-                                ]
-                            };
-                        }
-                    }
+                    // 直接尝试提交，commitAll 内部会：
+                    // 1. 先执行 git add . 确保所有改动都在暂存区
+                    // 2. 检查是否有已暂存的文件
+                    // 3. 如果没有改动，会返回错误
+                    // 这样更可靠，不依赖 hasChanges 的检测结果
                     // 提交前先拉取最新代码，避免冲突
                     const pullResult = await gitOps.pullFromRemote('origin', currentBranch);
                     if (!pullResult.success) {

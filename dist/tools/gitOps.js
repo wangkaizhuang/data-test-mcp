@@ -41,13 +41,30 @@ export class GitOperations {
     async hasChanges() {
         try {
             const status = await this.git.status();
-            // 检查是否有已暂存的文件（index 不为 ' '）
-            const hasStaged = status.files.some(f => f.index !== ' ' && f.index !== '?');
-            // 检查是否有未暂存的文件（working_dir 不为 ' '）
-            const hasUnstaged = status.files.some(f => f.working_dir !== ' ' && f.working_dir !== '?');
-            return hasStaged || hasUnstaged;
+            // 方法1: 使用 status 的统计信息（更可靠）
+            const hasStaged = (status.staged.length > 0) ||
+                (status.created.length > 0) ||
+                (status.deleted.length > 0) ||
+                (status.modified.length > 0) ||
+                (status.renamed.length > 0);
+            const hasUnstaged = (status.not_added.length > 0) ||
+                (status.conflicted.length > 0);
+            // 方法2: 检查 files 数组（备用方法）
+            // index: 'A'=新增, 'M'=修改, 'D'=删除, 'R'=重命名, 'C'=复制, ' '=无变化
+            // working_dir: 同上，'?'=未跟踪
+            const hasStagedFiles = status.files.some(f => {
+                const index = f.index || '';
+                return index !== ' ' && index !== '' && index !== '?';
+            });
+            const hasUnstagedFiles = status.files.some(f => {
+                const workingDir = f.working_dir || '';
+                return workingDir !== ' ' && workingDir !== '' && workingDir !== '?';
+            });
+            // 两种方法任一为 true 就返回 true
+            return hasStaged || hasUnstaged || hasStagedFiles || hasUnstagedFiles;
         }
         catch (error) {
+            console.error('[hasChanges] Error:', error);
             return false;
         }
     }
@@ -159,20 +176,33 @@ export class GitOperations {
      */
     async commitAll(message) {
         try {
-            // 1. 检查是否有已暂存的文件
+            // 1. 先尝试添加所有文件（确保所有改动都在暂存区）
+            await this.git.add('.');
+            // 2. 检查是否有已暂存的文件
             const status = await this.git.status();
-            const stagedFiles = status.files.filter(f => f.index !== ' ' && f.index !== '?');
-            if (stagedFiles.length === 0) {
+            // 使用多种方式检查暂存区
+            const stagedCount = status.staged.length +
+                status.created.length +
+                status.deleted.length +
+                status.modified.length +
+                status.renamed.length;
+            // 也检查 files 数组
+            const stagedFiles = status.files.filter(f => {
+                const index = f.index || '';
+                return index !== ' ' && index !== '' && index !== '?';
+            });
+            const totalStaged = stagedCount > 0 ? stagedCount : stagedFiles.length;
+            if (totalStaged === 0) {
                 return {
                     success: false,
-                    message: '暂存区没有需要提交的更改'
+                    message: '暂存区没有需要提交的更改，工作区也没有未暂存的文件'
                 };
             }
-            // 2. 提交所有已暂存的文件
+            // 3. 提交所有已暂存的文件
             await this.git.commit(message);
             return {
                 success: true,
-                message: `成功提交 ${stagedFiles.length} 个文件: ${message}`
+                message: `成功提交 ${totalStaged} 个文件: ${message}`
             };
         }
         catch (error) {
