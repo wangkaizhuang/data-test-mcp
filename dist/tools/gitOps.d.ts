@@ -3,7 +3,6 @@
  */
 import type { GitOperationResult } from '../types/element.js';
 export declare class GitOperations {
-    private git;
     private rootDir;
     constructor(rootDir?: string);
     /**

@@ -1,7 +1,6 @@
 /**
  * Git 操作工具
  */
-import simpleGit from 'simple-git';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { existsSync } from 'fs';
@@ -31,7 +30,6 @@ function isGitRepository(path) {
     return existsSync(gitPath);
 }
 export class GitOperations {
-    git;
     rootDir;
     constructor(rootDir) {
         // 使用提供的路径，或从环境变量/cwd 获取
@@ -46,15 +44,20 @@ export class GitOperations {
                 `   "env": { "PROJECT_ROOT": "你的项目路径" }`);
         }
         this.rootDir = projectRoot;
-        this.git = simpleGit(projectRoot);
         console.error(`[GitOps] Initialized with Git repository: ${projectRoot}`);
     }
     /**
      * 检查工作区状态
      */
     async getStatus() {
-        const status = await this.git.status();
-        return status.files.map(f => `${f.path} (${f.index})`).join('\n');
+        try {
+            const { stdout } = await execAsync('git status --porcelain', { cwd: this.rootDir });
+            return stdout.trim();
+        }
+        catch (error) {
+            console.error('[GitOps] Failed to get status:', error);
+            return '';
+        }
     }
     /**
      * 检查是否有未提交的改动（工作区或暂存区）
@@ -62,10 +65,9 @@ export class GitOperations {
      */
     async hasUncommittedChanges() {
         try {
-            const status = await this.git.status();
-            // isClean() 返回 true 表示没有任何改动
-            // 返回 false 表示工作区干净
-            return !status.isClean();
+            const { stdout } = await execAsync('git status --porcelain', { cwd: this.rootDir });
+            // 如果输出为空，说明工作区干净
+            return stdout.trim().length > 0;
         }
         catch (error) {
             console.error('[GitOps] Failed to check uncommitted changes:', error);
@@ -77,9 +79,13 @@ export class GitOperations {
      */
     async getUncommittedFiles() {
         try {
-            const status = await this.git.status();
-            // 返回所有有改动的文件（包括工作区和暂存区）
-            return status.files.map(f => f.path);
+            const { stdout } = await execAsync('git status --porcelain', { cwd: this.rootDir });
+            if (!stdout.trim()) {
+                return [];
+            }
+            // 解析 git status --porcelain 输出
+            // 格式: XY filename
+            return stdout.trim().split('\n').map(line => line.substring(3));
         }
         catch (error) {
             console.error('[GitOps] Failed to get uncommitted files:', error);
@@ -91,15 +97,11 @@ export class GitOperations {
      */
     async addAll() {
         try {
-            // 先获取有改动的文件列表
-            const filesBefore = await this.getUncommittedFiles();
             // 执行 git add --all
-            await this.git.add('--all');
+            await execAsync('git add --all', { cwd: this.rootDir });
             // 检查暂存区文件
-            const status = await this.git.status();
-            const stagedFiles = status.files
-                .filter(f => f.index !== ' ' && f.index !== '?')
-                .map(f => f.path);
+            const { stdout } = await execAsync('git diff --cached --name-only', { cwd: this.rootDir });
+            const stagedFiles = stdout.trim() ? stdout.trim().split('\n') : [];
             return {
                 success: stagedFiles.length > 0,
                 filesAdded: stagedFiles
@@ -120,7 +122,7 @@ export class GitOperations {
         try {
             const targetBranch = branch || await this.getCurrentBranch();
             // 拉取远程代码（Git 会自动处理合并）
-            await this.git.pull(remote, targetBranch);
+            await execAsync(`git pull ${remote} ${targetBranch}`, { cwd: this.rootDir });
             return {
                 success: true,
                 branch: targetBranch,
@@ -172,10 +174,11 @@ export class GitOperations {
                 };
             }
             // 2. 只添加指定的文件
-            await this.git.add(files);
+            const filesArg = files.map(f => `"${f}"`).join(' ');
+            await execAsync(`git add ${filesArg}`, { cwd: this.rootDir });
             // 3. 检查是否有实际更改（可能文件没有修改）
-            const status = await this.git.status();
-            const stagedFiles = status.files.filter(f => f.index !== ' ' && f.index !== '?');
+            const { stdout } = await execAsync('git diff --cached --name-only', { cwd: this.rootDir });
+            const stagedFiles = stdout.trim() ? stdout.trim().split('\n') : [];
             if (stagedFiles.length === 0) {
                 return {
                     success: false,
@@ -183,7 +186,7 @@ export class GitOperations {
                 };
             }
             // 4. 提交
-            await this.git.commit(message);
+            await execAsync(`git commit -m "${message.replace(/"/g, '\\"')}"`, { cwd: this.rootDir });
             return {
                 success: true,
                 message: `成功提交: ${message}`
@@ -204,8 +207,8 @@ export class GitOperations {
     async commitAllStaged(message) {
         try {
             // 1. 检查暂存区是否有文件
-            const status = await this.git.status();
-            const stagedFiles = status.files.filter(f => f.index !== ' ' && f.index !== '?');
+            const { stdout } = await execAsync('git diff --cached --name-only', { cwd: this.rootDir });
+            const stagedFiles = stdout.trim() ? stdout.trim().split('\n') : [];
             if (stagedFiles.length === 0) {
                 return {
                     success: false,
@@ -213,11 +216,11 @@ export class GitOperations {
                 };
             }
             // 2. 提交暂存区的所有文件
-            await this.git.commit(message);
+            await execAsync(`git commit -m "${message.replace(/"/g, '\\"')}"`, { cwd: this.rootDir });
             return {
                 success: true,
                 message: `成功提交 ${stagedFiles.length} 个文件: ${message}`,
-                filesCommitted: stagedFiles.map(f => f.path)
+                filesCommitted: stagedFiles
             };
         }
         catch (error) {
@@ -233,8 +236,8 @@ export class GitOperations {
      */
     async branchExists(branch) {
         try {
-            const branches = await this.git.branchLocal();
-            return branches.all.includes(branch);
+            const { stdout } = await execAsync(`git branch --list "${branch}"`, { cwd: this.rootDir });
+            return stdout.trim().length > 0;
         }
         catch {
             return false;
@@ -245,8 +248,8 @@ export class GitOperations {
      */
     async getCurrentBranch() {
         try {
-            const status = await this.git.status();
-            return status.current || 'main';
+            const { stdout } = await execAsync('git rev-parse --abbrev-ref HEAD', { cwd: this.rootDir });
+            return stdout.trim() || 'main';
         }
         catch {
             return 'main';
@@ -259,10 +262,10 @@ export class GitOperations {
         try {
             const exists = await this.branchExists(branch);
             if (!exists) {
-                await this.git.checkoutLocalBranch(branch);
+                await execAsync(`git checkout -b "${branch}"`, { cwd: this.rootDir });
             }
             else {
-                await this.git.checkout(branch);
+                await execAsync(`git checkout "${branch}"`, { cwd: this.rootDir });
             }
             return {
                 success: true,
@@ -393,8 +396,8 @@ export class GitOperations {
      */
     async getLastCommitMessage() {
         try {
-            const log = await this.git.log({ maxCount: 1 });
-            return log.latest?.message || '';
+            const { stdout } = await execAsync('git log -1 --pretty=%B', { cwd: this.rootDir });
+            return stdout.trim();
         }
         catch (error) {
             return '';
