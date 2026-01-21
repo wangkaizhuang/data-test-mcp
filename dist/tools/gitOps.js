@@ -4,13 +4,41 @@
 import simpleGit from 'simple-git';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { existsSync } from 'fs';
+import { join, resolve } from 'path';
 const execAsync = promisify(exec);
 export class GitOperations {
     git;
     rootDir;
     constructor(rootDir = process.cwd()) {
-        this.rootDir = rootDir;
-        this.git = simpleGit(rootDir);
+        // 自动查找 Git 仓库根目录
+        const gitRoot = this.findGitRoot(rootDir);
+        if (!gitRoot) {
+            throw new Error(`未找到 Git 仓库。当前目录: ${rootDir}\n请确保在 Git 仓库目录中运行，或提供正确的项目路径。`);
+        }
+        this.rootDir = gitRoot;
+        this.git = simpleGit(gitRoot);
+    }
+    /**
+     * 查找 Git 仓库根目录（向上查找 .git 目录）
+     */
+    findGitRoot(startDir) {
+        let currentDir = resolve(startDir);
+        const root = resolve('/');
+        while (currentDir !== root) {
+            const gitDir = join(currentDir, '.git');
+            if (existsSync(gitDir)) {
+                return currentDir;
+            }
+            // 向上查找父目录
+            const parentDir = resolve(currentDir, '..');
+            if (parentDir === currentDir) {
+                // 已经到达根目录
+                break;
+            }
+            currentDir = parentDir;
+        }
+        return null;
     }
     /**
      * 检查工作区状态
@@ -195,21 +223,42 @@ export class GitOperations {
             if (totalStaged === 0) {
                 return {
                     success: false,
-                    message: '暂存区没有需要提交的更改，工作区也没有未暂存的文件'
+                    message: '暂存区没有需要提交的更改，工作区也没有未暂存的文件',
+                    details: {
+                        gitRoot: this.rootDir,
+                        hint: '请确保工作区或暂存区有改动'
+                    }
                 };
             }
             // 3. 提交所有已暂存的文件
             await this.git.commit(message);
             return {
                 success: true,
-                message: `成功提交 ${totalStaged} 个文件: ${message}`
+                message: `成功提交 ${totalStaged} 个文件: ${message}`,
+                details: {
+                    gitRoot: this.rootDir,
+                    filesCount: totalStaged
+                }
             };
         }
         catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            // 提供更详细的错误信息
+            let detailedMessage = '提交失败';
+            if (errorMessage.includes('not a git repository')) {
+                detailedMessage = `提交失败：当前目录不是 Git 仓库\nGit 仓库根目录: ${this.rootDir}\n请确保在正确的 Git 仓库目录中运行。`;
+            }
+            else if (errorMessage.includes('nothing to commit')) {
+                detailedMessage = '提交失败：没有需要提交的更改';
+            }
             return {
                 success: false,
-                error: error instanceof Error ? error.message : String(error),
-                message: '提交失败'
+                error: errorMessage,
+                message: detailedMessage,
+                details: {
+                    gitRoot: this.rootDir,
+                    currentDir: process.cwd()
+                }
             };
         }
     }

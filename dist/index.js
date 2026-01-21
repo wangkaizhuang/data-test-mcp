@@ -15,6 +15,22 @@ import { generateTestIdSuggestions, addTestIdToConstant, generateConstantName } 
 import { PortManager } from './utils/portManager.js';
 import { DevServer } from './tools/devServer.js';
 let pendingChanges = null;
+/**
+ * 安全地创建 GitOperations 实例，自动查找 Git 仓库根目录
+ */
+function createGitOperations(startDir = process.cwd()) {
+    try {
+        const gitOps = new GitOperations(startDir);
+        return { gitOps };
+    }
+    catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        return {
+            gitOps: null, // 类型断言，实际不会使用
+            error: errorMessage
+        };
+    }
+}
 let previewServer = null;
 /**
  * 创建 MCP Server
@@ -354,7 +370,26 @@ async function createServer() {
                     if (!commitMessage) {
                         throw new McpError(ErrorCode.InvalidParams, 'commitMessage 是必需的参数');
                     }
-                    const gitOps = new GitOperations(process.cwd());
+                    // 尝试初始化 GitOperations，会自动查找 Git 仓库根目录
+                    const { gitOps, error: gitError } = createGitOperations(process.cwd());
+                    if (gitError || !gitOps) {
+                        return {
+                            content: [
+                                {
+                                    type: 'text',
+                                    text: JSON.stringify({
+                                        success: false,
+                                        message: gitError || '无法初始化 Git 操作',
+                                        error: gitError,
+                                        details: {
+                                            currentDir: process.cwd(),
+                                            hint: '请确保在 Git 仓库目录中运行，或检查当前工作目录是否正确'
+                                        }
+                                    }, null, 2)
+                                }
+                            ]
+                        };
+                    }
                     // 获取当前分支（不切换分支，直接在当前分支提交）
                     const currentBranch = await gitOps.getCurrentBranch();
                     // 直接尝试提交，commitAll 内部会：
@@ -467,7 +502,26 @@ async function createServer() {
                             ]
                         };
                     }
-                    const gitOps = new GitOperations(process.cwd());
+                    // 尝试初始化 GitOperations，会自动查找 Git 仓库根目录
+                    const { gitOps, error: gitError } = createGitOperations(process.cwd());
+                    if (gitError || !gitOps) {
+                        return {
+                            content: [
+                                {
+                                    type: 'text',
+                                    text: JSON.stringify({
+                                        success: false,
+                                        message: gitError || '无法初始化 Git 操作',
+                                        error: gitError,
+                                        details: {
+                                            currentDir: process.cwd(),
+                                            hint: '请确保在 Git 仓库目录中运行，或检查当前工作目录是否正确'
+                                        }
+                                    }, null, 2)
+                                }
+                            ]
+                        };
+                    }
                     // 获取当前分支
                     const currentBranch = await gitOps.getCurrentBranch();
                     // 如果没有提供 title，使用最后一次 commit 的 message

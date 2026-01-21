@@ -7,6 +7,10 @@ export declare class GitOperations {
     private rootDir;
     constructor(rootDir?: string);
     /**
+     * 查找 Git 仓库根目录（向上查找 .git 目录）
+     */
+    private findGitRoot;
+    /**
      * 检查工作区状态
      */
     getStatus(): Promise<string>;
