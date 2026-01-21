@@ -65,6 +65,64 @@ export class GitOperations {
         }
     }
     /**
+     * 执行 lint 检查
+     */
+    async runLint() {
+        try {
+            const { stdout, stderr } = await execAsync('pnpm lint', {
+                cwd: this.rootDir,
+                maxBuffer: 10 * 1024 * 1024 // 10MB buffer for large output
+            });
+            // 检查输出中是否包含错误信息
+            const hasError = stdout.toLowerCase().includes('error') ||
+                stderr.toLowerCase().includes('error');
+            if (hasError) {
+                return {
+                    success: false,
+                    error: stderr || stdout,
+                    message: 'Lint 检查发现错误，请修复后重试'
+                };
+            }
+            // 如果 stderr 有内容但退出码是 0，可能是警告，不算失败
+            if (stderr && !hasError) {
+                return {
+                    success: true,
+                    message: 'Lint 检查完成（有警告）',
+                    error: stderr
+                };
+            }
+            return {
+                success: true,
+                message: 'Lint 检查通过'
+            };
+        }
+        catch (error) {
+            // execAsync 在命令失败时会抛出错误
+            const errorMessage = error.stderr || error.stdout || error.message || String(error);
+            return {
+                success: false,
+                error: errorMessage,
+                message: 'Lint 检查失败，请修复错误后重试'
+            };
+        }
+    }
+    /**
+     * 获取修改过的文件列表（包括已暂存和未暂存的）
+     */
+    async getModifiedFiles() {
+        try {
+            const status = await this.git.status();
+            // 获取所有修改过的文件（包括已暂存和未暂存的）
+            const modifiedFiles = status.files
+                .filter(f => f.index !== ' ' || f.working_dir !== ' ')
+                .map(f => f.path);
+            return modifiedFiles;
+        }
+        catch (error) {
+            return [];
+        }
+    }
+    /**
      * 提交更改
      * 只提交指定的文件，不提交其他更改
      */

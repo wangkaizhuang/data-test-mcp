@@ -170,10 +170,17 @@ function addTestIdUsingStringManipulation(fileContent, path, testId) {
     // 检查是否已有属性，决定如何添加空格
     const tagNameMatch = beforeEnd.match(/^<(\w+)/);
     const hasAttributes = beforeEnd.trim().length > (tagNameMatch ? tagNameMatch[0].length : 0);
-    // 添加属性，保持原有的空格格式
-    const newAttribute = hasAttributes
-        ? ` data-testid="${testId}"`
-        : ` data-testid="${testId}"`;
+    // 判断是否多行属性，尽量保持原有缩进
+    let newAttribute = '';
+    if (beforeEnd.includes('\n')) {
+        const lastNewline = beforeEnd.lastIndexOf('\n');
+        const indent = beforeEnd.slice(lastNewline + 1).match(/^\s*/)?.[0] ?? '';
+        const insertIndent = indent || ' ';
+        newAttribute = `${beforeEnd.endsWith('\n') ? '' : '\n'}${insertIndent}data-testid="${testId}"`;
+    }
+    else {
+        newAttribute = hasAttributes ? ` data-testid="${testId}"` : ` data-testid="${testId}"`;
+    }
     const newTagContent = beforeEnd + newAttribute + whitespace + endChar;
     return beforeTag + newTagContent + afterTag;
 }

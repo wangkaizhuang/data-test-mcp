@@ -10,7 +10,37 @@ import { addTestIdToElement, applyCodeModification } from './tools/addTestId.js'
 import { locateComponentFileByInfo } from './utils/fileLocator.js';
 import { GitOperations } from './tools/gitOps.js';
 import { PreviewServer } from './tools/previewServer.js';
-import { generateTestIdSuggestions, addTestIdToConstant, generateConstantName } from './utils/testIdHelper.js';
+import { generateTestIdSuggestions, addTestIdToConstant, generateConstantName, findTestConstantFiles } from './utils/testIdHelper.js';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+import { platform } from 'os';
+const execAsync = promisify(exec);
+/**
+ * 打开浏览器
+ */
+async function openBrowser(url) {
+    try {
+        const osPlatform = platform();
+        let command;
+        if (osPlatform === 'darwin') {
+            // macOS
+            command = `open "${url}"`;
+        }
+        else if (osPlatform === 'win32') {
+            // Windows
+            command = `start "" "${url}"`;
+        }
+        else {
+            // Linux
+            command = `xdg-open "${url}"`;
+        }
+        await execAsync(command);
+    }
+    catch (error) {
+        // 如果打开浏览器失败，记录错误但不阻止服务器启动
+        console.error('Failed to open browser:', error);
+    }
+}
 let pendingChanges = null;
 let previewServer = null;
 /**
@@ -113,13 +143,13 @@ async function createServer() {
                 },
                 {
                     name: 'start_preview',
-                    description: '启动网页预览服务器，可以在浏览器中选择元素并自动添加到 Cursor。',
+                    description: '启动网页预览服务器，可以在浏览器中选择元素并自动添加到 Cursor。注意：targetUrl 必须是 http://localhost:3000，服务器启动后会自动打开预览浏览器。',
                     inputSchema: {
                         type: 'object',
                         properties: {
                             targetUrl: {
                                 type: 'string',
-                                description: '要预览的网页 URL（例如：http://localhost:3000）'
+                                description: '要预览的网页 URL（必须是 http://localhost:3000）'
                             },
                             port: {
                                 type: 'number',
@@ -281,9 +311,26 @@ async function createServer() {
                         };
                     }
                     const gitOps = new GitOperations(process.cwd());
-                    // 获取当前分支（不切换分支，直接在当前分支提交）
+                    // 1. 先执行 lint 检查
+                    const lintResult = await gitOps.runLint();
+                    if (!lintResult.success) {
+                        return {
+                            content: [
+                                {
+                                    type: 'text',
+                                    text: JSON.stringify({
+                                        success: false,
+                                        message: lintResult.message,
+                                        error: lintResult.error,
+                                        nextStep: '请修复 lint 错误后重试'
+                                    }, null, 2)
+                                }
+                            ]
+                        };
+                    }
+                    // 2. 获取当前分支（不切换分支，直接在当前分支提交）
                     const currentBranch = await gitOps.getCurrentBranch();
-                    // 提交前先拉取最新代码，避免冲突
+                    // 3. 提交前先拉取最新代码，避免冲突
                     const pullResult = await gitOps.pullFromRemote('origin', currentBranch);
                     if (!pullResult.success) {
                         // 如果是冲突错误，直接返回，不继续提交
@@ -305,8 +352,29 @@ async function createServer() {
                         // 其他错误（网络问题、远程分支不存在等），记录警告但继续提交
                         // 这些情况下本地提交仍然有效
                     }
-                    // 提交更改（只提交改动的文件）
-                    const result = await gitOps.commitChanges([pendingChanges.filePath], commitMessage);
+                    // 4. 收集需要提交的文件（使用相对路径）
+                    const filesToCommit = [];
+                    const { relative } = await import('path');
+                    const rootDir = process.cwd();
+                    // 4.1 添加添加了 data-testid 的代码文件
+                    const codeFileRelative = relative(rootDir, pendingChanges.filePath);
+                    filesToCommit.push(codeFileRelative);
+                    // 4.2 查找所有修改过的常量文件
+                    const modifiedFiles = await gitOps.getModifiedFiles();
+                    const constantFiles = await findTestConstantFiles(rootDir);
+                    // 找出所有修改过的常量文件
+                    for (const constantFile of constantFiles) {
+                        // 转换为相对路径
+                        const constantFileRelative = relative(rootDir, constantFile);
+                        // 检查文件是否在修改列表中
+                        if (modifiedFiles.includes(constantFileRelative) || modifiedFiles.includes(constantFile)) {
+                            if (!filesToCommit.includes(constantFileRelative)) {
+                                filesToCommit.push(constantFileRelative);
+                            }
+                        }
+                    }
+                    // 5. 提交更改（只提交相关文件）
+                    const result = await gitOps.commitChanges(filesToCommit, commitMessage);
                     if (!result.success) {
                         return {
                             content: [
@@ -432,17 +500,24 @@ async function createServer() {
                     if (!targetUrl) {
                         throw new McpError(ErrorCode.InvalidParams, 'targetUrl 是必需的参数');
                     }
+                    // 强制要求 targetUrl 必须是 http://localhost:3000
+                    const normalizedUrl = targetUrl.trim().toLowerCase();
+                    if (normalizedUrl !== 'http://localhost:3000' && normalizedUrl !== 'http://127.0.0.1:3000') {
+                        throw new McpError(ErrorCode.InvalidParams, `targetUrl 必须是 http://localhost:3000，当前值：${targetUrl}`);
+                    }
                     try {
                         // 如果已有服务器在运行，先停止
                         if (previewServer) {
                             previewServer.stop();
                         }
-                        // 创建新的预览服务器
+                        // 创建新的预览服务器（强制使用 http://localhost:3000）
                         previewServer = new PreviewServer({
-                            targetUrl,
+                            targetUrl: 'http://localhost:3000',
                             port: port || 3001
                         });
                         const { url, port: actualPort } = await previewServer.start();
+                        // 自动打开预览浏览器
+                        await openBrowser(url);
                         // 生成注入脚本代码
                         const injectScriptCode = `fetch('http://localhost:${actualPort}/inject-script.js').then(r => r.text()).then(eval);`;
                         const injectScriptUrl = `http://localhost:${actualPort}/inject-script.js`;
@@ -452,13 +527,14 @@ async function createServer() {
                                     type: 'text',
                                     text: JSON.stringify({
                                         success: true,
-                                        message: `WebSocket 服务器已启动（端口 ${actualPort}）`,
-                                        targetUrl: targetUrl,
+                                        message: `预览服务器已启动（端口 ${actualPort}），浏览器已自动打开`,
+                                        previewUrl: url,
+                                        targetUrl: 'http://localhost:3000',
                                         injectScriptUrl: injectScriptUrl,
                                         injectScriptCode: injectScriptCode,
-                                        instructions: `请使用浏览器扩展工具在目标网页（${targetUrl}）中执行以下代码来注入脚本：`,
+                                        instructions: `预览浏览器已自动打开。请在目标网页（http://localhost:3000）的控制台中执行以下代码来注入脚本：`,
                                         autoInject: {
-                                            url: targetUrl,
+                                            url: 'http://localhost:3000',
                                             script: injectScriptCode,
                                             description: '使用浏览器扩展工具自动在目标网页的控制台中执行脚本'
                                         },

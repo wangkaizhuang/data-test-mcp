@@ -15,6 +15,14 @@ export declare class GitOperations {
      */
     pullFromRemote(remote?: string, branch?: string): Promise<GitOperationResult>;
     /**
+     * 执行 lint 检查
+     */
+    runLint(): Promise<GitOperationResult>;
+    /**
+     * 获取修改过的文件列表（包括已暂存和未暂存的）
+     */
+    getModifiedFiles(): Promise<string[]>;
+    /**
      * 提交更改
      * 只提交指定的文件，不提交其他更改
      */
