@@ -5,46 +5,49 @@ import simpleGit from 'simple-git';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { existsSync } from 'fs';
-import { join, dirname } from 'path';
+import { join } from 'path';
 const execAsync = promisify(exec);
 /**
- * 查找 Git 仓库根目录
- * 从指定目录开始向上查找，直到找到 .git 目录
+ * 获取项目根目录
+ * 优先级：环境变量 PROJECT_ROOT > process.cwd()
  */
-export function findGitRoot(startDir = process.cwd()) {
-    let currentDir = startDir;
-    // 最多向上查找 10 层
-    for (let i = 0; i < 10; i++) {
-        const gitPath = join(currentDir, '.git');
-        if (existsSync(gitPath)) {
-            console.error(`[GitOps] Found .git directory at: ${currentDir}`);
-            return currentDir;
-        }
-        const parentDir = dirname(currentDir);
-        // 到达根目录（Windows: C:\, Mac/Linux: /）
-        if (parentDir === currentDir) {
-            break;
-        }
-        currentDir = parentDir;
+function getProjectRoot() {
+    // 优先使用环境变量
+    const envRoot = process.env.PROJECT_ROOT || process.env.MCP_PROJECT_ROOT;
+    if (envRoot) {
+        console.error(`[GitOps] Using project root from env: ${envRoot}`);
+        return envRoot;
     }
-    console.error(`[GitOps] No .git directory found from: ${startDir}`);
-    return null;
+    // 降级到 process.cwd()
+    const cwd = process.cwd();
+    console.error(`[GitOps] Using project root from cwd: ${cwd}`);
+    return cwd;
 }
 /**
- * 从文件路径中提取 Git 仓库根目录
- * 例如：C:\Users\...\project\src\components\Button.tsx -> C:\Users\...\project
+ * 验证路径是否为有效的 Git 仓库
  */
-export function findGitRootFromFile(filePath) {
-    // 获取文件所在目录
-    const fileDir = dirname(filePath);
-    return findGitRoot(fileDir);
+function isGitRepository(path) {
+    const gitPath = join(path, '.git');
+    return existsSync(gitPath);
 }
 export class GitOperations {
     git;
     rootDir;
-    constructor(rootDir = process.cwd()) {
-        this.rootDir = rootDir;
-        this.git = simpleGit(rootDir);
+    constructor(rootDir) {
+        // 使用提供的路径，或从环境变量/cwd 获取
+        const projectRoot = rootDir || getProjectRoot();
+        // 验证是否为 Git 仓库
+        if (!isGitRepository(projectRoot)) {
+            throw new Error(`未找到 Git 仓库。当前目录: ${projectRoot}\n` +
+                `请确保在 Git 仓库目录中运行，或提供正确的项目路径。\n\n` +
+                `提示：\n` +
+                `1. 确保 Cursor 在正确的项目目录中打开\n` +
+                `2. 或在 MCP 配置中设置环境变量：\n` +
+                `   "env": { "PROJECT_ROOT": "你的项目路径" }`);
+        }
+        this.rootDir = projectRoot;
+        this.git = simpleGit(projectRoot);
+        console.error(`[GitOps] Initialized with Git repository: ${projectRoot}`);
     }
     /**
      * 检查工作区状态

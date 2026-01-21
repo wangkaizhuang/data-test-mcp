@@ -2,16 +2,6 @@
  * Git 操作工具
  */
 import type { GitOperationResult } from '../types/element.js';
-/**
- * 查找 Git 仓库根目录
- * 从指定目录开始向上查找，直到找到 .git 目录
- */
-export declare function findGitRoot(startDir?: string): string | null;
-/**
- * 从文件路径中提取 Git 仓库根目录
- * 例如：C:\Users\...\project\src\components\Button.tsx -> C:\Users\...\project
- */
-export declare function findGitRootFromFile(filePath: string): string | null;
 export declare class GitOperations {
     private git;
     private rootDir;

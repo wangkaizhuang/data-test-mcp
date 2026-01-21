@@ -9,47 +9,13 @@ import { CallToolRequestSchema, ListToolsRequestSchema, ErrorCode, McpError } fr
 import { addTestIdToElement, applyCodeModification } from './tools/addTestId.js';
 import { locateComponentFileByInfo } from './utils/fileLocator.js';
 import { extractTagName, extractClassName } from './tools/elementParser.js';
-import { GitOperations, findGitRoot, findGitRootFromFile } from './tools/gitOps.js';
+import { GitOperations } from './tools/gitOps.js';
 import { PreviewServer } from './tools/previewServer.js';
 import { generateTestIdSuggestions, addTestIdToConstant, generateConstantName } from './utils/testIdHelper.js';
 import { PortManager } from './utils/portManager.js';
 import { DevServer } from './tools/devServer.js';
 let pendingChanges = null;
 let previewServer = null;
-let cachedProjectRoot = null; // 缓存检测到的项目根目录
-/**
- * 获取项目根目录（智能检测并缓存）
- */
-function getProjectRoot(fallbackFilePath) {
-    // 如果已经缓存，直接返回
-    if (cachedProjectRoot) {
-        return cachedProjectRoot;
-    }
-    let projectRoot = null;
-    // 策略 1: 从提供的文件路径中查找
-    if (fallbackFilePath) {
-        projectRoot = findGitRootFromFile(fallbackFilePath);
-        console.error(`[getProjectRoot] Found from file: ${projectRoot}`);
-    }
-    // 策略 2: 从 pendingChanges 中查找
-    if (!projectRoot && pendingChanges) {
-        projectRoot = findGitRootFromFile(pendingChanges.filePath);
-        console.error(`[getProjectRoot] Found from pending: ${projectRoot}`);
-    }
-    // 策略 3: 从当前工作目录向上查找
-    if (!projectRoot) {
-        projectRoot = findGitRoot(process.cwd());
-        console.error(`[getProjectRoot] Found from cwd: ${projectRoot}`);
-    }
-    // 缓存结果
-    if (projectRoot) {
-        cachedProjectRoot = projectRoot;
-        return projectRoot;
-    }
-    // 实在找不到，返回 process.cwd()（可能会出错，但保持向后兼容）
-    console.error(`[getProjectRoot] Fallback to cwd: ${process.cwd()}`);
-    return process.cwd();
-}
 /**
  * 创建 MCP Server
  */
@@ -257,8 +223,7 @@ async function createServer() {
                             domPath: elementPath,
                             componentInfo: componentName ? { name: componentName } : undefined
                         };
-                        const projectRoot = getProjectRoot();
-                        const locatedPath = await locateComponentFileByInfo(componentName, elementPath, projectRoot);
+                        const locatedPath = await locateComponentFileByInfo(componentName, elementPath, process.cwd());
                         if (!locatedPath) {
                             return {
                                 content: [
@@ -274,8 +239,6 @@ async function createServer() {
                         }
                         filePath = locatedPath;
                     }
-                    // 更新缓存的项目根目录（使用定位到的文件）
-                    getProjectRoot(filePath);
                     // 添加 testid
                     const elementInfo = {
                         domPath: elementPath,
@@ -306,8 +269,7 @@ async function createServer() {
                         await applyCodeModification(result.filePath, result.preview);
                     }
                     // 生成智能提示
-                    const projectRoot = getProjectRoot(filePath);
-                    const suggestions = await generateTestIdSuggestions(elementPath, testId, componentName, filePath, projectRoot);
+                    const suggestions = await generateTestIdSuggestions(elementPath, testId, componentName, filePath, process.cwd());
                     const constantKey = generateConstantName(elementPath, testId, componentName);
                     // 自动添加到常量文件
                     console.error('[add_testid] Attempting to add testId to constant file...');
@@ -372,39 +334,7 @@ async function createServer() {
                     if (!commitMessage) {
                         throw new McpError(ErrorCode.InvalidParams, 'commitMessage 是必需的参数');
                     }
-                    // 智能检测项目根目录
-                    let projectRoot = null;
-                    // 策略 1: 如果有 pendingChanges，从文件路径中提取项目根目录
-                    if (pendingChanges) {
-                        projectRoot = findGitRootFromFile(pendingChanges.filePath);
-                        console.error(`[confirm_and_commit] Detected Git root from pending file: ${projectRoot}`);
-                    }
-                    // 策略 2: 从当前工作目录向上查找 .git 目录
-                    if (!projectRoot) {
-                        projectRoot = findGitRoot(process.cwd());
-                        console.error(`[confirm_and_commit] Detected Git root from cwd: ${projectRoot}`);
-                    }
-                    // 都找不到，返回错误
-                    if (!projectRoot) {
-                        return {
-                            content: [
-                                {
-                                    type: 'text',
-                                    text: JSON.stringify({
-                                        success: false,
-                                        message: `未找到 Git 仓库。当前目录: ${process.cwd()}\n请确保在 Git 仓库目录中运行，或提供正确的项目路径。`,
-                                        error: `未找到 Git 仓库。当前目录: ${process.cwd()}\n请确保在 Git 仓库目录中运行，或提供正确的项目路径。`,
-                                        details: {
-                                            currentDir: process.cwd(),
-                                            pendingFile: pendingChanges?.filePath,
-                                            hint: '请确保在 Git 仓库目录中运行，或检查当前工作目录是否正确'
-                                        }
-                                    }, null, 2)
-                                }
-                            ]
-                        };
-                    }
-                    const gitOps = new GitOperations(projectRoot);
+                    const gitOps = new GitOperations(process.cwd());
                     // 获取当前分支（不切换分支，直接在当前分支提交）
                     const currentBranch = await gitOps.getCurrentBranch();
                     // 提交前先拉取最新代码，避免冲突
@@ -579,30 +509,7 @@ async function createServer() {
                             ]
                         };
                     }
-                    // 智能检测项目根目录（同 confirm_and_commit 逻辑）
-                    let projectRoot = null;
-                    if (pendingChanges) {
-                        projectRoot = findGitRootFromFile(pendingChanges.filePath);
-                        console.error(`[create_pr] Detected Git root from pending file: ${projectRoot}`);
-                    }
-                    if (!projectRoot) {
-                        projectRoot = findGitRoot(process.cwd());
-                        console.error(`[create_pr] Detected Git root from cwd: ${projectRoot}`);
-                    }
-                    if (!projectRoot) {
-                        return {
-                            content: [
-                                {
-                                    type: 'text',
-                                    text: JSON.stringify({
-                                        success: false,
-                                        message: `未找到 Git 仓库。当前目录: ${process.cwd()}\n请确保在 Git 仓库目录中运行。`
-                                    }, null, 2)
-                                }
-                            ]
-                        };
-                    }
-                    const gitOps = new GitOperations(projectRoot);
+                    const gitOps = new GitOperations(process.cwd());
                     // 获取当前分支
                     const currentBranch = await gitOps.getCurrentBranch();
                     // 如果没有提供 title，使用最后一次 commit 的 message
@@ -644,7 +551,7 @@ async function createServer() {
                 }
                 case 'start_preview': {
                     try {
-                        const projectPath = args?.projectPath || getProjectRoot();
+                        const projectPath = args?.projectPath || process.cwd();
                         const port = args?.port || 3000;
                         const wsPort = 3001;
                         // 1. 检查并清理 3000 端口
@@ -806,8 +713,7 @@ async function createServer() {
                     }
                     // 如果已有 testId，生成智能提示
                     if (selectedElement.testId && selectedElement.elementPath) {
-                        const projectRoot = getProjectRoot();
-                        const suggestions = await generateTestIdSuggestions(selectedElement.elementPath, selectedElement.testId, selectedElement.componentName, undefined, projectRoot);
+                        const suggestions = await generateTestIdSuggestions(selectedElement.elementPath, selectedElement.testId, selectedElement.componentName, undefined, process.cwd());
                         const constantKey = generateConstantName(selectedElement.elementPath, selectedElement.testId, selectedElement.componentName);
                         return {
                             content: [
@@ -859,15 +765,14 @@ async function createServer() {
                     let targetFile = constantFile;
                     if (!targetFile) {
                         const { findTestConstantFiles } = await import('./utils/testIdHelper.js');
-                        const projectRoot = getProjectRoot();
-                        const files = await findTestConstantFiles(projectRoot);
+                        const files = await findTestConstantFiles(process.cwd());
                         if (files.length > 0) {
                             targetFile = files[0];
                         }
                         else {
                             // 创建默认文件
                             const { join } = await import('path');
-                            targetFile = join(projectRoot, 'test.constant.ts');
+                            targetFile = join(process.cwd(), 'test.constant.ts');
                         }
                     }
                     const result = await addTestIdToConstant(targetFile, constantKey, testId);
