@@ -10,7 +10,14 @@ export class GitOperations {
     rootDir;
     constructor(rootDir = process.cwd()) {
         this.rootDir = rootDir;
-        this.git = simpleGit(rootDir);
+        // 初始化 simple-git 并配置编码
+        this.git = simpleGit(rootDir, {
+            config: [
+                'core.quotepath=false', // 禁止路径转义
+                'i18n.commitEncoding=utf-8', // 提交信息编码
+                'i18n.logOutputEncoding=utf-8' // 日志输出编码
+            ]
+        });
     }
     /**
      * 判断错误是否为“未找到 git”或 PATH 问题
@@ -147,9 +154,6 @@ export class GitOperations {
             }
             // 2. 只添加指定的文件
             await this.git.add(files);
-            // 2.1 确保提交编码为 UTF-8，避免中文提交信息乱码
-            await this.git.addConfig('i18n.commitEncoding', 'utf-8');
-            await this.git.addConfig('core.quotepath', 'false');
             // 3. 检查是否有实际更改（可能文件没有修改）
             const status = await this.git.status();
             const stagedFiles = status.files.filter(f => f.index !== ' ' && f.index !== '?');
@@ -159,7 +163,7 @@ export class GitOperations {
                     message: '指定的文件没有需要提交的更改'
                 };
             }
-            // 4. 提交
+            // 4. 提交（编码已在构造函数中配置）
             await this.git.commit(message);
             return {
                 success: true,

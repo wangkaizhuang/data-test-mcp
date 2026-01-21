@@ -2,6 +2,9 @@
  * TestID Helper MCP Server
  * 为前端元素自动添加 data-testid 属性的 MCP 工具
  */
+// 设置环境编码为 UTF-8
+process.env.LANG = 'en_US.UTF-8';
+process.env.LC_ALL = 'en_US.UTF-8';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
