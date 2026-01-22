@@ -1,63 +1,23 @@
 /**
  * Git 操作工具
  */
+import simpleGit from 'simple-git';
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { existsSync } from 'fs';
-import { join } from 'path';
 const execAsync = promisify(exec);
-/**
- * 获取项目根目录
- * 优先级：环境变量 PROJECT_ROOT > process.cwd()
- */
-function getProjectRoot() {
-    // 优先使用环境变量
-    const envRoot = process.env.PROJECT_ROOT || process.env.MCP_PROJECT_ROOT;
-    if (envRoot) {
-        console.error(`[GitOps] Using project root from env: ${envRoot}`);
-        return envRoot;
-    }
-    // 降级到 process.cwd()
-    const cwd = process.cwd();
-    console.error(`[GitOps] Using project root from cwd: ${cwd}`);
-    return cwd;
-}
-/**
- * 验证路径是否为有效的 Git 仓库
- */
-function isGitRepository(path) {
-    const gitPath = join(path, '.git');
-    return existsSync(gitPath);
-}
 export class GitOperations {
+    git;
     rootDir;
-    constructor(rootDir) {
-        // 使用提供的路径，或从环境变量/cwd 获取
-        const projectRoot = rootDir || getProjectRoot();
-        // 验证是否为 Git 仓库
-        if (!isGitRepository(projectRoot)) {
-            throw new Error(`未找到 Git 仓库。当前目录: ${projectRoot}\n` +
-                `请确保在 Git 仓库目录中运行，或提供正确的项目路径。\n\n` +
-                `提示：\n` +
-                `1. 确保 Cursor 在正确的项目目录中打开\n` +
-                `2. 或在 MCP 配置中设置环境变量：\n` +
-                `   "env": { "PROJECT_ROOT": "你的项目路径" }`);
-        }
-        this.rootDir = projectRoot;
-        console.error(`[GitOps] Initialized with Git repository: ${projectRoot}`);
+    constructor(rootDir = process.cwd()) {
+        this.rootDir = rootDir;
+        this.git = simpleGit(rootDir);
     }
     /**
      * 检查工作区状态
      */
     async getStatus() {
-        try {
-            const { stdout } = await execAsync('git status --porcelain', { cwd: this.rootDir });
-            return stdout.trim();
-        }
-        catch (error) {
-            console.error('[GitOps] Failed to get status:', error);
-            return '';
-        }
+        const status = await this.git.status();
+        return status.files.map(f => `${f.path} (${f.index})`).join('\n');
     }
     /**
      * 检查是否有未提交的改动（工作区或暂存区）
@@ -65,9 +25,10 @@ export class GitOperations {
      */
     async hasUncommittedChanges() {
         try {
-            const { stdout } = await execAsync('git status --porcelain', { cwd: this.rootDir });
-            // 如果输出为空，说明工作区干净
-            return stdout.trim().length > 0;
+            const status = await this.git.status();
+            // isClean() 返回 true 表示没有任何改动
+            // 返回 false 表示工作区干净
+            return !status.isClean();
         }
         catch (error) {
             console.error('[GitOps] Failed to check uncommitted changes:', error);
@@ -79,13 +40,9 @@ export class GitOperations {
      */
     async getUncommittedFiles() {
         try {
-            const { stdout } = await execAsync('git status --porcelain', { cwd: this.rootDir });
-            if (!stdout.trim()) {
-                return [];
-            }
-            // 解析 git status --porcelain 输出
-            // 格式: XY filename
-            return stdout.trim().split('\n').map(line => line.substring(3));
+            const status = await this.git.status();
+            // 返回所有有改动的文件（包括工作区和暂存区）
+            return status.files.map(f => f.path);
         }
         catch (error) {
             console.error('[GitOps] Failed to get uncommitted files:', error);
@@ -97,11 +54,15 @@ export class GitOperations {
      */
     async addAll() {
         try {
+            // 先获取有改动的文件列表
+            const filesBefore = await this.getUncommittedFiles();
             // 执行 git add --all
-            await execAsync('git add --all', { cwd: this.rootDir });
+            await this.git.add('--all');
             // 检查暂存区文件
-            const { stdout } = await execAsync('git diff --cached --name-only', { cwd: this.rootDir });
-            const stagedFiles = stdout.trim() ? stdout.trim().split('\n') : [];
+            const status = await this.git.status();
+            const stagedFiles = status.files
+                .filter(f => f.index !== ' ' && f.index !== '?')
+                .map(f => f.path);
             return {
                 success: stagedFiles.length > 0,
                 filesAdded: stagedFiles
@@ -122,7 +83,7 @@ export class GitOperations {
         try {
             const targetBranch = branch || await this.getCurrentBranch();
             // 拉取远程代码（Git 会自动处理合并）
-            await execAsync(`git pull ${remote} ${targetBranch}`, { cwd: this.rootDir });
+            await this.git.pull(remote, targetBranch);
             return {
                 success: true,
                 branch: targetBranch,
@@ -174,11 +135,10 @@ export class GitOperations {
                 };
             }
             // 2. 只添加指定的文件
-            const filesArg = files.map(f => `"${f}"`).join(' ');
-            await execAsync(`git add ${filesArg}`, { cwd: this.rootDir });
+            await this.git.add(files);
             // 3. 检查是否有实际更改（可能文件没有修改）
-            const { stdout } = await execAsync('git diff --cached --name-only', { cwd: this.rootDir });
-            const stagedFiles = stdout.trim() ? stdout.trim().split('\n') : [];
+            const status = await this.git.status();
+            const stagedFiles = status.files.filter(f => f.index !== ' ' && f.index !== '?');
             if (stagedFiles.length === 0) {
                 return {
                     success: false,
@@ -186,7 +146,7 @@ export class GitOperations {
                 };
             }
             // 4. 提交
-            await execAsync(`git commit -m "${message.replace(/"/g, '\\"')}"`, { cwd: this.rootDir });
+            await this.git.commit(message);
             return {
                 success: true,
                 message: `成功提交: ${message}`
@@ -207,8 +167,8 @@ export class GitOperations {
     async commitAllStaged(message) {
         try {
             // 1. 检查暂存区是否有文件
-            const { stdout } = await execAsync('git diff --cached --name-only', { cwd: this.rootDir });
-            const stagedFiles = stdout.trim() ? stdout.trim().split('\n') : [];
+            const status = await this.git.status();
+            const stagedFiles = status.files.filter(f => f.index !== ' ' && f.index !== '?');
             if (stagedFiles.length === 0) {
                 return {
                     success: false,
@@ -216,11 +176,11 @@ export class GitOperations {
                 };
             }
             // 2. 提交暂存区的所有文件
-            await execAsync(`git commit -m "${message.replace(/"/g, '\\"')}"`, { cwd: this.rootDir });
+            await this.git.commit(message);
             return {
                 success: true,
                 message: `成功提交 ${stagedFiles.length} 个文件: ${message}`,
-                filesCommitted: stagedFiles
+                filesCommitted: stagedFiles.map(f => f.path)
             };
         }
         catch (error) {
@@ -236,8 +196,8 @@ export class GitOperations {
      */
     async branchExists(branch) {
         try {
-            const { stdout } = await execAsync(`git branch --list "${branch}"`, { cwd: this.rootDir });
-            return stdout.trim().length > 0;
+            const branches = await this.git.branchLocal();
+            return branches.all.includes(branch);
         }
         catch {
             return false;
@@ -248,8 +208,8 @@ export class GitOperations {
      */
     async getCurrentBranch() {
         try {
-            const { stdout } = await execAsync('git rev-parse --abbrev-ref HEAD', { cwd: this.rootDir });
-            return stdout.trim() || 'main';
+            const status = await this.git.status();
+            return status.current || 'main';
         }
         catch {
             return 'main';
@@ -262,10 +222,10 @@ export class GitOperations {
         try {
             const exists = await this.branchExists(branch);
             if (!exists) {
-                await execAsync(`git checkout -b "${branch}"`, { cwd: this.rootDir });
+                await this.git.checkoutLocalBranch(branch);
             }
             else {
-                await execAsync(`git checkout "${branch}"`, { cwd: this.rootDir });
+                await this.git.checkout(branch);
             }
             return {
                 success: true,
@@ -396,8 +356,8 @@ export class GitOperations {
      */
     async getLastCommitMessage() {
         try {
-            const { stdout } = await execAsync('git log -1 --pretty=%B', { cwd: this.rootDir });
-            return stdout.trim();
+            const log = await this.git.log({ maxCount: 1 });
+            return log.latest?.message || '';
         }
         catch (error) {
             return '';

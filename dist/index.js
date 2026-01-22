@@ -14,6 +14,48 @@ import { PreviewServer } from './tools/previewServer.js';
 import { generateTestIdSuggestions, addTestIdToConstant, generateConstantName } from './utils/testIdHelper.js';
 import { PortManager } from './utils/portManager.js';
 import { DevServer } from './tools/devServer.js';
+import { dirname, join } from 'path';
+import { existsSync } from 'fs';
+import { fileURLToPath } from 'url';
+/**
+ * 获取项目根目录
+ * 优先级：
+ * 1. 环境变量 PROJECT_ROOT 或 MCP_PROJECT_ROOT（如果包含 package.json）
+ * 2. 从当前文件位置向上查找包含 package.json 的目录（最多 5 层）
+ * 3. 降级到 process.cwd()
+ */
+function getProjectRoot() {
+    // 优先使用环境变量
+    const envRoot = process.env.PROJECT_ROOT || process.env.MCP_PROJECT_ROOT;
+    if (envRoot && existsSync(join(envRoot, 'package.json'))) {
+        console.error(`[MCP Server] Using project root from env: ${envRoot}`);
+        return envRoot;
+    }
+    // 从当前文件路径（dist/index.js）向上查找项目根目录
+    // ESM 环境下需要使用 import.meta.url
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = dirname(__filename);
+    let currentDir = __dirname; // dist 目录
+    const maxDepth = 5; // 最多向上查找 5 层
+    for (let i = 0; i < maxDepth; i++) {
+        // 检查当前目录是否包含 package.json
+        if (existsSync(join(currentDir, 'package.json'))) {
+            console.error(`[MCP Server] Found project root by traversal: ${currentDir}`);
+            return currentDir;
+        }
+        // 向上查找
+        const parentDir = dirname(currentDir);
+        if (parentDir === currentDir) {
+            // 已经到达根目录，停止查找
+            break;
+        }
+        currentDir = parentDir;
+    }
+    // 如果找不到，降级到 process.cwd()
+    const cwd = process.cwd();
+    console.error(`[MCP Server] Using process.cwd() as fallback: ${cwd}`);
+    return cwd;
+}
 let pendingChanges = null;
 let previewServer = null;
 /**
@@ -223,7 +265,7 @@ async function createServer() {
                             domPath: elementPath,
                             componentInfo: componentName ? { name: componentName } : undefined
                         };
-                        const locatedPath = await locateComponentFileByInfo(componentName, elementPath, process.cwd());
+                        const locatedPath = await locateComponentFileByInfo(componentName, elementPath, getProjectRoot());
                         if (!locatedPath) {
                             return {
                                 content: [
@@ -269,7 +311,7 @@ async function createServer() {
                         await applyCodeModification(result.filePath, result.preview);
                     }
                     // 生成智能提示
-                    const suggestions = await generateTestIdSuggestions(elementPath, testId, componentName, filePath, process.cwd());
+                    const suggestions = await generateTestIdSuggestions(elementPath, testId, componentName, filePath, getProjectRoot());
                     const constantKey = generateConstantName(elementPath, testId, componentName);
                     // 自动添加到常量文件
                     console.error('[add_testid] Attempting to add testId to constant file...');
@@ -334,7 +376,7 @@ async function createServer() {
                     if (!commitMessage) {
                         throw new McpError(ErrorCode.InvalidParams, 'commitMessage 是必需的参数');
                     }
-                    const gitOps = new GitOperations(process.cwd());
+                    const gitOps = new GitOperations(getProjectRoot());
                     // 获取当前分支（不切换分支，直接在当前分支提交）
                     const currentBranch = await gitOps.getCurrentBranch();
                     // 提交前先拉取最新代码，避免冲突
@@ -509,7 +551,7 @@ async function createServer() {
                             ]
                         };
                     }
-                    const gitOps = new GitOperations(process.cwd());
+                    const gitOps = new GitOperations(getProjectRoot());
                     // 获取当前分支
                     const currentBranch = await gitOps.getCurrentBranch();
                     // 如果没有提供 title，使用最后一次 commit 的 message
@@ -551,7 +593,7 @@ async function createServer() {
                 }
                 case 'start_preview': {
                     try {
-                        const projectPath = args?.projectPath || process.cwd();
+                        const projectPath = args?.projectPath || getProjectRoot();
                         const port = args?.port || 3000;
                         const wsPort = 3001;
                         // 1. 检查并清理 3000 端口
@@ -713,7 +755,7 @@ async function createServer() {
                     }
                     // 如果已有 testId，生成智能提示
                     if (selectedElement.testId && selectedElement.elementPath) {
-                        const suggestions = await generateTestIdSuggestions(selectedElement.elementPath, selectedElement.testId, selectedElement.componentName, undefined, process.cwd());
+                        const suggestions = await generateTestIdSuggestions(selectedElement.elementPath, selectedElement.testId, selectedElement.componentName, undefined, getProjectRoot());
                         const constantKey = generateConstantName(selectedElement.elementPath, selectedElement.testId, selectedElement.componentName);
                         return {
                             content: [
@@ -765,14 +807,14 @@ async function createServer() {
                     let targetFile = constantFile;
                     if (!targetFile) {
                         const { findTestConstantFiles } = await import('./utils/testIdHelper.js');
-                        const files = await findTestConstantFiles(process.cwd());
+                        const files = await findTestConstantFiles(getProjectRoot());
                         if (files.length > 0) {
                             targetFile = files[0];
                         }
                         else {
                             // 创建默认文件
                             const { join } = await import('path');
-                            targetFile = join(process.cwd(), 'test.constant.ts');
+                            targetFile = join(getProjectRoot(), 'test.constant.ts');
                         }
                     }
                     const result = await addTestIdToConstant(targetFile, constantKey, testId);
