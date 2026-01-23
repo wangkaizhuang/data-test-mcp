@@ -258,6 +258,18 @@ async function createServer() {
                         }
                         console.error(`[add_testid] Generated testId: ${testId}`);
                     }
+                    // 在修改代码前先拉取最新代码，避免冲突
+                    console.error('[add_testid] Pulling from remote before modification...');
+                    const gitOps = new GitOperations(getProjectRoot());
+                    const currentBranch = await gitOps.getCurrentBranch();
+                    const pullResult = await gitOps.pullFromRemote('origin', currentBranch);
+                    if (!pullResult.success) {
+                        // 所有错误（冲突、网络问题、远程分支不存在等）都只记录警告，不影响后续流程
+                        console.error('[add_testid] Pull warning (will continue):', pullResult.message);
+                    }
+                    else {
+                        console.error('[add_testid] Successfully pulled from remote');
+                    }
                     // 定位文件
                     let filePath = componentFilePath;
                     if (!filePath) {
